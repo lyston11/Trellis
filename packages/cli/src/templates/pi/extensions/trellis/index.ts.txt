@@ -1840,7 +1840,11 @@ export default function trellisExtension(pi: {
   const startupCtxCache = new Map<string, string>();
   const getStartupCtx = (k: string | null, ctx?: PiExtensionContext): string => {
     const r = resolveRoot(ctx);
-    const key = cacheKey(k, ctx);
+    // Keyed by task as well as session. This snapshot lives in the system
+    // prompt, so a mid-session task switch must rebuild it; otherwise the
+    // overview keeps describing the previous task while the breadcrumb
+    // (the authority) has already moved on.
+    const key = `${cacheKey(k, ctx)}::${readTaskDir(r, k) ?? ""}`;
     let startup = startupCtxCache.get(key);
     if (startup === undefined) {
       // The session overview is orientation-only. Volatile state (the workflow
@@ -2089,10 +2093,14 @@ export default function trellisExtension(pi: {
     // pointer is snapshotted into systemPrompt. The full implement-agent
     // context stays on disk and is read on demand via `trellis-before-dev`.
     const taskPointer = buildTaskPointer(root, k);
-    let taskCtx = taskCtxSnapshot.get(key);
+    // Same reasoning as getStartupCtx: keyed by task so a mid-session switch
+    // rebuilds the pointer instead of leaving it aimed at the previous task's
+    // directory.
+    const snapshotKey = `${key}::${readTaskDir(root, k) ?? ""}`;
+    let taskCtx = taskCtxSnapshot.get(snapshotKey);
     if (taskCtx === undefined) {
       taskCtx = taskPointer;
-      taskCtxSnapshot.set(key, taskCtx);
+      taskCtxSnapshot.set(snapshotKey, taskCtx);
       lastSentTaskCtx.set(key, taskPointer);
     }
     const updates: string[] = [];
