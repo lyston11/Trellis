@@ -1819,7 +1819,6 @@ export default function trellisExtension(pi: {
     key: string;
     ts: number;
     wf: string;
-    ov: string;
   } | null = null;
   const getTurnCtx = (k: string | null, ctx?: PiExtensionContext) => {
     const now = Date.now();
@@ -1831,7 +1830,6 @@ export default function trellisExtension(pi: {
       key: ck,
       ts: now,
       wf: workflowBreadcrumb(r, k),
-      ov: sessionOverview(r, k),
     };
     return turnCache;
   };
@@ -1840,15 +1838,14 @@ export default function trellisExtension(pi: {
   // key and stays byte-identical for the life of the process. Volatile state
   // travels through persisted custom messages instead (append-only history).
   const startupCtxCache = new Map<string, string>();
-  const getStartupCtx = (
-    k: string | null,
-    turn: { ov: string },
-    ctx?: PiExtensionContext,
-  ): string => {
+  const getStartupCtx = (k: string | null, ctx?: PiExtensionContext): string => {
+    const r = resolveRoot(ctx);
     const key = cacheKey(k, ctx);
     let startup = startupCtxCache.get(key);
     if (startup === undefined) {
-      startup = buildStartupContext(resolveRoot(ctx), k, turn.ov);
+      // The session overview is orientation-only. Volatile state (the workflow
+      // breadcrumb) travels through persisted messages instead.
+      startup = buildStartupContext(r, k, sessionOverview(r, k));
       startupCtxCache.set(key, startup);
     }
     return startup;
@@ -2087,39 +2084,37 @@ export default function trellisExtension(pi: {
     const cur = (event as { systemPrompt?: string }).systemPrompt ?? "";
     const root = resolveRoot(ctx);
     const turn = getTurnCtx(k, ctx);
-    const startup = getStartupCtx(k, turn, ctx);
-    // Task context is snapshotted into systemPrompt once; later on-disk
-    // changes are delivered as persisted messages so the prefix stays stable.
-    const freshTaskCtx = buildContext(root, "trellis-implement", k);
+    const startup = getStartupCtx(k, ctx);
+    // Inline mode: the main session edits code directly, so only a task
+    // pointer is snapshotted into systemPrompt. The full implement-agent
+    // context stays on disk and is read on demand via `trellis-before-dev`.
+    const taskPointer = buildTaskPointer(root, k);
     let taskCtx = taskCtxSnapshot.get(key);
     if (taskCtx === undefined) {
-      taskCtx = freshTaskCtx;
+      taskCtx = taskPointer;
       taskCtxSnapshot.set(key, taskCtx);
-      lastSentTaskCtx.set(key, freshTaskCtx);
+      lastSentTaskCtx.set(key, taskPointer);
     }
     const updates: string[] = [];
-    const runtimeContext = [turn.wf, turn.ov].filter(Boolean).join("\n\n");
+    // Volatile state travels as an append-only persisted message. Dedup on a
+    // small state key (root + breadcrumb) instead of the full text, so git
+    // status or task-tree churn no longer appends a fresh snapshot per turn.
+    const stateKey = `${root}\u0000${turn.wf}`;
     // Re-assert the current root's context on project switches: when the
     // session returns to an unchanged root, the root-scoped lastSent* maps
     // alone would leave the previous project's persisted update as the most
     // recent one in history.
     const prevRoot = lastPersistedRoot.get(k ?? "default");
     const switchedRoot = prevRoot !== undefined && prevRoot !== root;
-    if (
-      runtimeContext &&
-      (runtimeContext !== lastSentRuntimeCtx.get(key) || switchedRoot)
-    ) {
-      lastSentRuntimeCtx.set(key, runtimeContext);
-      updates.push(runtimeContext);
+    if (turn.wf && (stateKey !== lastSentRuntimeCtx.get(key) || switchedRoot)) {
+      lastSentRuntimeCtx.set(key, stateKey);
+      updates.push(turn.wf);
     }
-    if (
-      freshTaskCtx !== lastSentTaskCtx.get(key) ||
-      switchedRoot
-    ) {
-      lastSentTaskCtx.set(key, freshTaskCtx);
+    if (taskPointer && (taskPointer !== lastSentTaskCtx.get(key) || switchedRoot)) {
+      lastSentTaskCtx.set(key, taskPointer);
       updates.push(
         "<trellis-task-context-update>\nTask context changed on disk. This supersedes the Trellis Task Context in the system prompt.\n\n" +
-          freshTaskCtx +
+          taskPointer +
           "\n</trellis-task-context-update>",
       );
     }
