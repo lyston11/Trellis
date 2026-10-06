@@ -1241,6 +1241,48 @@ function buildContext(root: string, agent: string, key: string | null): string {
   ].join("\n");
 }
 
+/** Inline-mode task pointer. The main session edits code directly, so the
+ * full implement-agent context (prd/design/implement plus curated specs) is
+ * not broadcast into the system prompt; the artifacts stay on disk and are
+ * read on demand via `trellis-before-dev`. */
+function buildTaskPointer(root: string, key: string | null): string {
+  const dir = readTaskDir(root, key);
+  if (!dir) return "";
+  const rel = relative(root, dir).replace(/\\/g, "/");
+  const artifacts = ["prd.md", "design.md", "implement.md"].filter((f) =>
+    exists(join(dir, f)),
+  );
+  const lines = [
+    "## Trellis Task",
+    `Task directory: ${rel}`,
+    artifacts.length
+      ? `Artifacts: ${artifacts.join(", ")}`
+      : "Artifacts: (none)",
+  ];
+  // Curated spec/research manifest. Inline mode does not inject the bodies
+  // (they are large and churn), but the manifest is the only record of which
+  // cross-task specs apply, so list path + reason and let the agent read them
+  // on demand. implement.jsonl and check.jsonl hold the same file set in
+  // practice, so the union is listed once; a file unique to check.jsonl still
+  // appears, tagged. Skipped when empty so simple tasks stay terse.
+  const implementEntries = readJsonlEntries(dir, "implement.jsonl").filter(
+    (e) => e.type !== "directory",
+  );
+  const checkOnly = readJsonlEntries(dir, "check.jsonl")
+    .filter((e) => e.type !== "directory")
+    .filter((e) => !implementEntries.some((i) => i.file === e.file));
+  if (implementEntries.length || checkOnly.length) {
+    lines.push("Curated spec/research to read before editing or checking:");
+    for (const e of implementEntries) lines.push(`- \`${e.file}\` — ${e.reason}`);
+    for (const e of checkOnly)
+      lines.push(`- \`${e.file}\` — ${e.reason} (check only)`);
+  }
+  lines.push(
+    "Load `trellis-before-dev` before editing; read the artifacts and curated files above on demand.",
+  );
+  return lines.join("\n");
+}
+
 function normalizeAgent(agent: string | undefined): string {
   const name = agent ?? "trellis-implement";
   return name.startsWith("trellis-") ? name : `trellis-${name}`;
