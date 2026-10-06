@@ -1888,6 +1888,11 @@ export default function trellisExtension(pi: {
     name: "trellis_subagent",
     label: "Trellis Subagent",
     description: "Run a Trellis project sub-agent with active task context.",
+    // Not declared to the model by default. The inline workflow has the main
+    // session edit code directly, so auto-dispatching a cold-started Pi
+    // subprocess is no longer the default path. The tool stays registered and
+    // can still be invoked explicitly (--tools / pi.setActiveTools()).
+    defaultActive: false,
     promptSnippet:
       'Sub-agent dispatch protocol (Trellis): your dispatch prompt MUST start with one line "Active task: <task path from `task.py current`>" before any other instructions.',
     promptGuidelines: [
