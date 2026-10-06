@@ -74,3 +74,25 @@ npm i -g github:lyston11/Trellis
 For an existing project, the two affected files are
 `.pi/extensions/trellis/index.ts` and `.trellis/workflow.md`; both are safe to
 copy from `packages/cli/src/templates/`.
+
+## Keeping up with upstream
+
+`main` stays a clean mirror of `upstream/main`; the patches live only on
+`local/pi-inline-context`. To sync:
+
+```bash
+git fetch upstream
+git checkout main && git merge --ff-only upstream/main
+git push origin main
+
+git checkout local/pi-inline-context
+git rebase main                       # replay the patch commits
+git push --force-with-lease origin local/pi-inline-context
+```
+
+To review the whole patch set at once:
+
+```bash
+git diff upstream/main..local/pi-inline-context
+git diff upstream/main..local/pi-inline-context --stat
+```
