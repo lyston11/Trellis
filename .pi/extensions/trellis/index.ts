@@ -26,6 +26,7 @@ interface PiToolResult {
   details?: unknown;
 }
 interface PiExtensionContext {
+  cwd?: string;
   hasUI?: boolean;
   model?: {
     provider?: string;
@@ -102,17 +103,6 @@ const MAX_PARALLEL_PROMPTS = 6;
 const ABORT_KILL_GRACE_MS = 1500;
 const SESSION_OVERVIEW_TIMEOUT_MS = 1500;
 const THROTTLE_MS = 500;
-const FIRST_REPLY_NOTICE = `<first-reply-notice>
-On the first visible assistant reply in this session, briefly acknowledge that Trellis SessionStart context loaded.
-Choose the acknowledgment language in this order:
-1. Use the language of the user's current request (the user message that triggered this reply).
-2. If that request has no clear natural language, use an explicitly established project communication language.
-3. If neither provides a language, output the language-neutral fallback exactly: \`Trellis SessionStart ✓\`.
-Continue directly with the user's request after the acknowledgment.
-The acknowledgment must not alter the language used for the remainder of the response.
-This notice is one-shot: do not repeat it after the first visible assistant reply in this session.
-</first-reply-notice>`;
-
 // ── State types ───────────────────────────────────────────────────────
 type RunStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 type ToolStatus = "running" | "succeeded" | "failed";
@@ -971,11 +961,33 @@ function readJsonlEntries(basePath: string, jsonlPath: string): JsonlEntry[] {
 function findRoot(start: string): string {
   let c = resolve(start);
   while (true) {
-    if (existsSync(join(c, ".trellis")) || existsSync(join(c, ".pi"))) return c;
+    // Only a directory with `.trellis/` is a Trellis project root. A bare
+    // `.pi` can be pi's global config (`~/.pi`) or an unrelated project, so
+    // accepting it here made root resolution stop too early (e.g. on `~`).
+    // Also reject a regular file named `.trellis` — the marker must be a
+    // directory.
+    const marker = join(c, ".trellis");
+    if (existsSync(marker) && statSync(marker).isDirectory()) return c;
     const p = dirname(c);
     if (p === c) return resolve(start);
     c = p;
   }
+}
+// Resolve the project root from the session working directory when available
+// (pi's ExtensionContext.cwd), falling back to the pi host process cwd.
+// process.cwd() is the host's launch directory and can differ from the
+// session cwd (pi-web / RPC / multi-project hosts), which made .pi/agents
+// lookups fail or resolve to the wrong project.
+function resolveRoot(ctx?: PiExtensionContext): string {
+  return findRoot(ctx?.cwd ?? process.cwd());
+}
+// Cache key scoping per-session state by both the session key and the
+// resolved project root. With dynamic root resolution a session can observe
+// different ctx.cwd values over its lifetime (pi-web / RPC / project
+// switching); keying caches by the session key alone would leak one
+// project's startup/task context into another.
+function cacheKey(k: string | null, ctx?: PiExtensionContext): string {
+  return `${k ?? "default"}::${resolveRoot(ctx)}`;
 }
 function splitFM(c: string) {
   const m = c.replace(/^\uFEFF/, "").match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
@@ -1154,27 +1166,14 @@ function sessionOverview(root: string, key: string | null): string {
   return stdout ? `<session-overview>\n${stdout}\n</session-overview>` : "";
 }
 
-function workflowOverview(root: string, key: string | null): string {
-  const stdout = runContextScript(root, key, [
-    "--mode",
-    "phase",
-    "--platform",
-    "pi",
-  ]);
-  return stdout ? `<trellis-workflow>\n${stdout}\n</trellis-workflow>` : "";
-}
-
 function buildStartupContext(
   root: string,
   key: string | null,
   overview: string,
 ): string {
-  const workflow = workflowOverview(root, key);
   return [
     "<session-context>\nTrellis compact SessionStart context. Use it to orient the session; load details on demand.\n</session-context>",
-    FIRST_REPLY_NOTICE,
     overview,
-    workflow,
     "<ready>\nUse the current workflow state to decide whether to create, continue, or skip a Trellis task.\n</ready>",
   ]
     .filter(Boolean)
@@ -1240,6 +1239,48 @@ function buildContext(root: string, agent: string, key: string | null): string {
     impl ? "\n" + impl : "",
     spec ? "\n### Curated Spec / Research Context\n" + spec : "",
   ].join("\n");
+}
+
+/** Inline-mode task pointer. The main session edits code directly, so the
+ * full implement-agent context (prd/design/implement plus curated specs) is
+ * not broadcast into the system prompt; the artifacts stay on disk and are
+ * read on demand via `trellis-before-dev`. */
+function buildTaskPointer(root: string, key: string | null): string {
+  const dir = readTaskDir(root, key);
+  if (!dir) return "";
+  const rel = relative(root, dir).replace(/\\/g, "/");
+  const artifacts = ["prd.md", "design.md", "implement.md"].filter((f) =>
+    exists(join(dir, f)),
+  );
+  const lines = [
+    "## Trellis Task",
+    `Task directory: ${rel}`,
+    artifacts.length
+      ? `Artifacts: ${artifacts.join(", ")}`
+      : "Artifacts: (none)",
+  ];
+  // Curated spec/research manifest. Inline mode does not inject the bodies
+  // (they are large and churn), but the manifest is the only record of which
+  // cross-task specs apply, so list path + reason and let the agent read them
+  // on demand. implement.jsonl and check.jsonl hold the same file set in
+  // practice, so the union is listed once; a file unique to check.jsonl still
+  // appears, tagged. Skipped when empty so simple tasks stay terse.
+  const implementEntries = readJsonlEntries(dir, "implement.jsonl").filter(
+    (e) => e.type !== "directory",
+  );
+  const checkOnly = readJsonlEntries(dir, "check.jsonl")
+    .filter((e) => e.type !== "directory")
+    .filter((e) => !implementEntries.some((i) => i.file === e.file));
+  if (implementEntries.length || checkOnly.length) {
+    lines.push("Curated spec/research to read before editing or checking:");
+    for (const e of implementEntries) lines.push(`- \`${e.file}\` — ${e.reason}`);
+    for (const e of checkOnly)
+      lines.push(`- \`${e.file}\` — ${e.reason} (check only)`);
+  }
+  lines.push(
+    "Load `trellis-before-dev` before editing; read the artifacts and curated files above on demand.",
+  );
+  return lines.join("\n");
 }
 
 function normalizeAgent(agent: string | undefined): string {
@@ -1761,7 +1802,9 @@ export default function trellisExtension(pi: {
   getThinkingLevel?: () => string;
 }): void {
   if (process.env.TRELLIS_SUBAGENT_CHILD === "1") return;
-  const root = findRoot(process.cwd());
+  // Process-level fallback; call sites with a session context re-resolve via
+  // resolveRoot(ctx) so the active project (session cwd) is used instead.
+  const root = resolveRoot();
   const procKey = `pi_process_${hash([root, process.pid, Date.now(), randomBytes(8).toString("hex")].join(":"))}`;
   let curKey: string | null = null;
 
@@ -1773,20 +1816,20 @@ export default function trellisExtension(pi: {
 
   // Per-turn cache to avoid double-spawning python
   let turnCache: {
-    key: string | null;
+    key: string;
     ts: number;
     wf: string;
-    ov: string;
   } | null = null;
-  const getTurnCtx = (k: string | null) => {
+  const getTurnCtx = (k: string | null, ctx?: PiExtensionContext) => {
     const now = Date.now();
-    if (turnCache && turnCache.key === k && now - turnCache.ts < 1500)
+    const ck = cacheKey(k, ctx);
+    if (turnCache && turnCache.key === ck && now - turnCache.ts < 1500)
       return turnCache;
+    const r = resolveRoot(ctx);
     turnCache = {
-      key: k,
+      key: ck,
       ts: now,
-      wf: workflowBreadcrumb(root, k),
-      ov: sessionOverview(root, k),
+      wf: workflowBreadcrumb(r, k),
     };
     return turnCache;
   };
@@ -1795,14 +1838,18 @@ export default function trellisExtension(pi: {
   // key and stays byte-identical for the life of the process. Volatile state
   // travels through persisted custom messages instead (append-only history).
   const startupCtxCache = new Map<string, string>();
-  const getStartupCtx = (
-    k: string | null,
-    turn: { ov: string },
-  ): string => {
-    const key = k ?? "default";
+  const getStartupCtx = (k: string | null, ctx?: PiExtensionContext): string => {
+    const r = resolveRoot(ctx);
+    // Keyed by task as well as session. This snapshot lives in the system
+    // prompt, so a mid-session task switch must rebuild it; otherwise the
+    // overview keeps describing the previous task while the breadcrumb
+    // (the authority) has already moved on.
+    const key = `${cacheKey(k, ctx)}::${readTaskDir(r, k) ?? ""}`;
     let startup = startupCtxCache.get(key);
     if (startup === undefined) {
-      startup = buildStartupContext(root, k, turn.ov);
+      // The session overview is orientation-only. Volatile state (the workflow
+      // breadcrumb) travels through persisted messages instead.
+      startup = buildStartupContext(r, k, sessionOverview(r, k));
       startupCtxCache.set(key, startup);
     }
     return startup;
@@ -1810,6 +1857,14 @@ export default function trellisExtension(pi: {
   const taskCtxSnapshot = new Map<string, string>();
   const lastSentTaskCtx = new Map<string, string>();
   const lastSentRuntimeCtx = new Map<string, string>();
+  // Session-level "most recently persisted" project root. The root-scoped
+  // lastSent* maps suppress re-emission for an unchanged root, but when a
+  // session switches projects (A -> B -> A) the latest persisted update
+  // would otherwise stay B's — and its <trellis-task-context-update>
+  // explicitly supersedes the system-prompt context. Re-assert the current
+  // root's task/runtime context on every root transition so the agent never
+  // keeps following the previous project's instructions.
+  const lastPersistedRoot = new Map<string, string>();
 
   // Toggle only the latest subagent native card; do not use Pi global tool expansion.
   const toggleDetail = (ctx: PiExtensionContext) => {
@@ -1833,6 +1888,11 @@ export default function trellisExtension(pi: {
     name: "trellis_subagent",
     label: "Trellis Subagent",
     description: "Run a Trellis project sub-agent with active task context.",
+    // Not declared to the model by default. The inline workflow has the main
+    // session edit code directly, so auto-dispatching a cold-started Pi
+    // subprocess is no longer the default path. The tool stays registered and
+    // can still be invoked explicitly (--tools / pi.setActiveTools()).
+    defaultActive: false,
     promptSnippet:
       'Sub-agent dispatch protocol (Trellis): your dispatch prompt MUST start with one line "Active task: <task path from `task.py current`>" before any other instructions.',
     promptGuidelines: [
@@ -1877,6 +1937,7 @@ export default function trellisExtension(pi: {
       ctx?: PiExtensionContext,
     ) => {
       activeSubagentToolCallId = id;
+      const root = resolveRoot(ctx);
       const agentName = normalizeAgent(input.agent);
       if (!isTrellisAgent(root, agentName)) {
         return {
@@ -2028,33 +2089,49 @@ export default function trellisExtension(pi: {
   });
   pi.on?.("before_agent_start", (event, ctx) => {
     const k = getKey(event, ctx);
-    const key = k ?? "default";
+    const key = cacheKey(k, ctx);
     const cur = (event as { systemPrompt?: string }).systemPrompt ?? "";
-    const turn = getTurnCtx(k);
-    const startup = getStartupCtx(k, turn);
-    // Task context is snapshotted into systemPrompt once; later on-disk
-    // changes are delivered as persisted messages so the prefix stays stable.
-    const freshTaskCtx = buildContext(root, "trellis-implement", k);
-    let taskCtx = taskCtxSnapshot.get(key);
+    const root = resolveRoot(ctx);
+    const turn = getTurnCtx(k, ctx);
+    const startup = getStartupCtx(k, ctx);
+    // Inline mode: the main session edits code directly, so only a task
+    // pointer is snapshotted into systemPrompt. The full implement-agent
+    // context stays on disk and is read on demand via `trellis-before-dev`.
+    const taskPointer = buildTaskPointer(root, k);
+    // Same reasoning as getStartupCtx: keyed by task so a mid-session switch
+    // rebuilds the pointer instead of leaving it aimed at the previous task's
+    // directory.
+    const snapshotKey = `${key}::${readTaskDir(root, k) ?? ""}`;
+    let taskCtx = taskCtxSnapshot.get(snapshotKey);
     if (taskCtx === undefined) {
-      taskCtx = freshTaskCtx;
-      taskCtxSnapshot.set(key, taskCtx);
-      lastSentTaskCtx.set(key, freshTaskCtx);
+      taskCtx = taskPointer;
+      taskCtxSnapshot.set(snapshotKey, taskCtx);
+      lastSentTaskCtx.set(key, taskPointer);
     }
     const updates: string[] = [];
-    const runtimeContext = [turn.wf, turn.ov].filter(Boolean).join("\n\n");
-    if (runtimeContext && runtimeContext !== lastSentRuntimeCtx.get(key)) {
-      lastSentRuntimeCtx.set(key, runtimeContext);
-      updates.push(runtimeContext);
+    // Volatile state travels as an append-only persisted message. Dedup on a
+    // small state key (root + breadcrumb) instead of the full text, so git
+    // status or task-tree churn no longer appends a fresh snapshot per turn.
+    const stateKey = `${root}\u0000${turn.wf}`;
+    // Re-assert the current root's context on project switches: when the
+    // session returns to an unchanged root, the root-scoped lastSent* maps
+    // alone would leave the previous project's persisted update as the most
+    // recent one in history.
+    const prevRoot = lastPersistedRoot.get(k ?? "default");
+    const switchedRoot = prevRoot !== undefined && prevRoot !== root;
+    if (turn.wf && (stateKey !== lastSentRuntimeCtx.get(key) || switchedRoot)) {
+      lastSentRuntimeCtx.set(key, stateKey);
+      updates.push(turn.wf);
     }
-    if (freshTaskCtx !== lastSentTaskCtx.get(key)) {
-      lastSentTaskCtx.set(key, freshTaskCtx);
+    if (taskPointer && (taskPointer !== lastSentTaskCtx.get(key) || switchedRoot)) {
+      lastSentTaskCtx.set(key, taskPointer);
       updates.push(
         "<trellis-task-context-update>\nTask context changed on disk. This supersedes the Trellis Task Context in the system prompt.\n\n" +
-          freshTaskCtx +
+          taskPointer +
           "\n</trellis-task-context-update>",
       );
     }
+    if (updates.length > 0) lastPersistedRoot.set(k ?? "default", root);
     const content = updates.join("\n\n");
     return {
       message: content
