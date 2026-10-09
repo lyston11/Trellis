@@ -34,6 +34,7 @@ Branch `local/pi-inline-context`, on top of `upstream/main`:
 | `fix(pi): drop the first-reply notice and the per-turn phase index` | template ext | Remove two pure-noise injections |
 | `perf(pi): stop broadcasting the implement sub-agent context every turn` | template ext | Replace the full task context with a task pointer + curated manifest list |
 | `perf(pi): dedup runtime messages on a small state key` | template ext | Stop re-appending a snapshot whenever git status changes; no_task stays exempt (see below) |
+| `fix(pi): carry the phase step and the artifact list in the breadcrumb` | template ext | An active task dedups per status, but its line names `prd.md`/`design.md`/`implement.md` and emits the step detail that the dropped phase index used to supply |
 | `fix(pi): key overview and pointer snapshots by task, not just session` | template ext | A mid-session task switch must rebuild them |
 | `chore(pi): stop declaring trellis_subagent to the model by default` | template ext | `defaultActive: false` — still callable, no longer auto-selected |
 | `feat(workflow): treat Pi as an inline platform` | `workflow.md` template | Pi reads `planning`/`in_progress` only; the `-inline` bodies were Codex-only |
@@ -72,11 +73,83 @@ buried: 2026-10-09 15:26 familygraph session, `Status: no_task` at message 7 of
 sessions show the opposite pattern — the phase index appeared 85 times in one
 transcript, which incidentally kept the same rules in view.
 
-`stateKey` therefore appends `turn.ts` while the breadcrumb reports `no_task`
-(~422-byte breadcrumb per turn). Once a task exists the breadcrumb varies by
-status and dedups exactly as before. Same trade-off applies to the full
+`stateKey` therefore appends a per-send counter while the breadcrumb reports
+`no_task` (~422-byte breadcrumb per turn). Once a task exists the breadcrumb
+varies by status and dedups exactly as before. Same trade-off applies to the full
 phase-index restore: on Pi most of it is Claude Code/Cursor/Codex-specific and
 only `### Request Triage` + `### Active Task Routing` do work.
+
+**The breadcrumb had to carry the phase step.** Exempting `no_task` fixes task
+*creation* but not task *execution*. The `workflow.md` bodies are summaries, and
+the `in_progress` one (`Flow: trellis-before-dev -> edit -> trellis-check -> ...`)
+refers to a Task/Agent tool Pi does not register, so the model edited inline
+without reading `prd.md`, `design.md`, `implement.md` or `.trellis/spec/` —
+even with a task bound to the session. No skill got loaded in either 2026-10-09
+session, versus 144 loads across 26 pre-optimisation sessions.
+
+So for a bound task the breadcrumb now emits the active step's own guidance
+(`get_context.py --mode phase --platform pi --step 2.1`, the same text
+`trellis-before-dev` would have surfaced) plus an explicit artifact list:
+
+```
+<workflow-state>
+Task: redis-coordination (in_progress)
+Task dir: .trellis/tasks/10-03-redis-coordination
+Read before editing: prd.md, design.md, implement.md in that directory.
+#### 2.1 Implement `[required · repeatable]`
+
+
+1. Load the `trellis-before-dev` skill to read project guidelines
+2. Read `{TASK_DIR}/prd.md`, ...
+3. Consult materials under `{TASK_DIR}/research/`
+4. Implement the code per reviewed artifacts
+5. Run project lint and type-check
+</workflow-state>
+```
+
+527 bytes for `in_progress`, 1575 for `planning` (its 1.1 detail is longer), and
+**still deduped per status** — the step text is byte-stable while the status is,
+so a task costs one message per status change, not one per turn. The step text
+is read from disk each turn but returned from a per-process cache, keeping the
+repeated python spawn off the hot path. `--platform pi` matters: without it the
+step renders the Claude Code/Cursor/dispatch-platform text.
+
+Two smaller fixes rode along: a stale runtime pointer naming an archived task
+directory now falls back to `no_task` instead of suppressing the triage
+instruction forever, and `<ready>` in the system prompt states that an active
+task's artifacts and the specs they name are required reading.
+
+## Known limitation: worktree isolation is project-side, not here
+
+`AGENTS.md` asks for one branch + one linked worktree per task, and
+`familygraph` implements that with a Trellis `hooks.after_start` entry running
+`.trellis/scripts/hooks/auto_worktree.py`. That file is **project**
+customisation (`apply_customization.py`), not part of the templates in this
+fork, so the breadcrumb cannot remind anyone about it. A project missing the
+hook gets a task with `worktree_path: null` and no complaint. Check the project,
+not this fork:
+
+```bash
+python3 ./.trellis/scripts/task.py create "probe" --slug probe
+python3 - <<'EOF'
+import json; print(json.load(open('.trellis/tasks/*probe*/task.json'))['worktree_path'])
+EOF
+```
+
+## Verifying a breadcrumb change without a live session
+
+The extension is a template, so it is exercised by importing it directly:
+
+```bash
+cp packages/cli/src/templates/pi/extensions/trellis/index.ts.txt /tmp/ext.ts
+bun build /tmp/ext.ts --target=node --format=esm --outfile=/tmp/trellis_ext.mjs
+```
+
+Then call the `before_agent_start` handler with a fake `pi` object and a
+`ctx.sessionManager.getSessionId()` of `"<uuid>"` (the runtime pointer file is
+`pi_<uuid>.json`; a `pi_`-prefixed id misses it and silently reports `no_task`).
+Fire the handler twice to check dedup: repeating a breadcrumb means the dedup key
+is wrong, an empty second message means it is right.
 
 ## Known limitation
 

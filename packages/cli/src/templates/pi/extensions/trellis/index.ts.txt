@@ -1113,6 +1113,33 @@ function readTaskDir(root: string, key: string | null): string | null {
 // ── Workflow State Breadcrumb ─────────────────────────────────────────
 const WF_RE =
   /\[workflow-state:([A-Za-z0-9_-]+)\]\s*\n([\s\S]*?)\n\s*\[\/workflow-state:\1\]/g;
+// The step whose guidance is emitted per turn for a given task status. Pi
+// resolves `planning` and `in_progress` directly, and both carry required
+// steps.
+function stepForStatus(status: string): string {
+  return status === "planning" ? "1.1" : status === "in_progress" ? "2.1" : "";
+}
+
+// Step detail is read from disk on every turn but returns the same bytes while
+// the status is unchanged, so the per-process copy keeps the repeated python
+// spawn off the hot path (same reason as `startupCtxCache`).
+const stepDetailCache = new Map<string, string>();
+function stepDetail(root: string, key: string | null, step: string): string {
+  const ck = `${root}\u0000${step}`;
+  const hit = stepDetailCache.get(ck);
+  if (hit !== undefined) return hit;
+  const out = runContextScript(root, key, [
+    "--mode",
+    "phase",
+    "--platform",
+    "pi",
+    "--step",
+    step,
+  ]).trim();
+  stepDetailCache.set(ck, out);
+  return out;
+}
+
 function workflowBreadcrumb(root: string, key: string | null): string {
   const wf = readText(join(root, ".trellis", "workflow.md"));
   if (!wf) return "";
@@ -1123,21 +1150,48 @@ function workflowBreadcrumb(root: string, key: string | null): string {
     if (s && b) templates[s] = b;
   }
   const dir = readTaskDir(root, key);
-  let header = "Status: no_task",
-    lookup = "no_task";
+  const lines: string[] = [];
+  // A stale runtime pointer can name a task directory that no longer exists
+  // (task archived, pointer not cleared). Treat an unreadable task.json as "no
+  // active task" so the triage instruction is not suppressed forever by a
+  // header the model cannot act on.
+  let status = "",
+    id = "",
+    taskDir = "";
   if (dir) {
     try {
       const d = JSON.parse(readText(join(dir, "task.json"))) as JsonObject;
-      const status = str(d.status) ?? "";
-      const id = str(d.id) ?? dir.split(/[\\/]/).pop() ?? "";
-      if (status) {
-        header = `Task: ${id} (${status})`;
-        lookup = status;
-      }
+      status = str(d.status) ?? "";
+      id = str(d.id) ?? dir.split(/[\\/]/).pop() ?? "";
+      if (status) taskDir = dir;
     } catch {}
   }
-  const body = templates[lookup] ?? "Refer to workflow.md for current step.";
-  return `<workflow-state>\n${header}\n${body}\n</workflow-state>`;
+  if (taskDir) {
+    // While a task is underway this per-turn line is the only place that names
+    // the artifacts and the skills: the full phase index is no longer injected
+    // and the workflow.md body only says "load trellis-before-dev", which the
+    // model skipped. Emit the active step's own guidance
+    // (`get_context.py --mode phase --step 2.1`, ~1 KB, the same text the
+    // skill would have produced) and name the artifacts by path. The step
+    // detail is byte-stable for a status, so this still dedups per status.
+    // See PATCHES.md, "the breadcrumb had to carry the phase step".
+    const step = stepForStatus(status);
+    const detail = step ? stepDetail(root, key, step) : "";
+    const artifacts = ["prd.md", "design.md", "implement.md"].filter((f) =>
+      exists(join(taskDir, f)),
+    );
+    lines.push(`Task: ${id || taskDir.split(/[\\/]/).pop()} (${status || "unknown"})`);
+    lines.push(`Task dir: ${relative(root, taskDir).replace(/\\/g, "/")}`);
+    if (artifacts.length)
+      lines.push(`Read before editing: ${artifacts.join(", ")} in that directory.`);
+    lines.push(
+      detail || templates[status] || "Refer to workflow.md for current step.",
+    );
+  } else {
+    lines.push("Status: no_task");
+    lines.push(templates.no_task ?? "Refer to workflow.md for current step.");
+  }
+  return `<workflow-state>\n${lines.join("\n")}\n</workflow-state>`;
 }
 
 // ── Session Overview ───────────────────────────────────────────────────
@@ -1174,7 +1228,7 @@ function buildStartupContext(
   return [
     "<session-context>\nTrellis compact SessionStart context. Use it to orient the session; load details on demand.\n</session-context>",
     overview,
-    "<ready>\nUse the current workflow state to decide whether to create, continue, or skip a Trellis task.\n</ready>",
+    "<ready>\nUse the current workflow state to decide whether to create, continue, or skip a Trellis task.\nWhile a Trellis task is active, its artifacts (prd.md, design.md, implement.md) and the spec files they name are required reading before any code is written.\n</ready>",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -1865,6 +1919,11 @@ export default function trellisExtension(pi: {
   // root's task/runtime context on every root transition so the agent never
   // keeps following the previous project's instructions.
   const lastPersistedRoot = new Map<string, string>();
+  // Monotonic stamp used only to keep the no_task breadcrumb out of its own
+  // dedup. It counts *sends*, not cached turns: getTurnCtx serves the same
+  // cached breadcrumb for 1.5s, so a stamp carried in the cache would repeat
+  // across two rapid turns and the message would be dropped again.
+  let noTaskSendSeq = 0;
 
   // Toggle only the latest subagent native card; do not use Pi global tool expansion.
   const toggleDetail = (ctx: PiExtensionContext) => {
@@ -2110,8 +2169,11 @@ export default function trellisExtension(pi: {
     }
     const updates: string[] = [];
     // Volatile state travels as an append-only persisted message. Dedup on a
-    // small state key (root + breadcrumb) instead of the full text, so git
+    // small state key (root + breadcrumb body) instead of the full text, so git
     // status or task-tree churn no longer appends a fresh snapshot per turn.
+    //
+    // The breadcrumb gained a per-turn stamp for the caches above, so that stamp
+    // is dropped here: this map is what decides whether a message is appended.
     //
     // With no active task the breadcrumb is the only thing that asks the model
     // to consider creating one: Phase 2's dispatch instructions do not apply
@@ -2122,7 +2184,7 @@ export default function trellisExtension(pi: {
     // exists the breadcrumb varies by status and dedups exactly as before.
     const noTask = /^Status:\s*no_task\b/m.test(turn.wf);
     const stateKey = noTask
-      ? `${root}\u0000${turn.wf}\u0000${turn.ts}`
+      ? `${root}\u0000${turn.wf}\u0000${++noTaskSendSeq}`
       : `${root}\u0000${turn.wf}`;
     // Re-assert the current root's context on project switches: when the
     // session returns to an unchanged root, the root-scoped lastSent* maps
