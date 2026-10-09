@@ -34,7 +34,7 @@ Branch `local/pi-inline-context`, on top of `upstream/main`:
 | `fix(pi): drop the first-reply notice and the per-turn phase index` | template ext | Remove two pure-noise injections |
 | `perf(pi): stop broadcasting the implement sub-agent context every turn` | template ext | Replace the full task context with a task pointer + curated manifest list |
 | `perf(pi): dedup runtime messages on a small state key` | template ext | Stop re-appending a snapshot whenever git status changes; no_task stays exempt (see below) |
-| `fix(pi): carry the phase step and the artifact list in the breadcrumb` | template ext | An active task dedups per status, but its line names `prd.md`/`design.md`/`implement.md` and emits the step detail that the dropped phase index used to supply |
+| `fix(pi): carry the phase step and the artifact list in the breadcrumb` | template ext | An active task used to dedup per status, which meant its step detail vanished once persisted. It now re-asserts every turn and names the task's worktree, so the model keeps seeing "cd there" and "read prd.md first" instead of losing it in a 124-line AGENTS.md. |
 | `fix(pi): key overview and pointer snapshots by task, not just session` | template ext | A mid-session task switch must rebuild them |
 | `chore(pi): stop declaring trellis_subagent to the model by default` | template ext | `defaultActive: false` — still callable, no longer auto-selected |
 | `feat(workflow): treat Pi as an inline platform` | `workflow.md` template | Pi reads `planning`/`in_progress` only; the `-inline` bodies were Codex-only |
@@ -89,12 +89,14 @@ session, versus 144 loads across 26 pre-optimisation sessions.
 
 So for a bound task the breadcrumb now emits the active step's own guidance
 (`get_context.py --mode phase --platform pi --step 2.1`, the same text
-`trellis-before-dev` would have surfaced) plus an explicit artifact list:
+`trellis-before-dev` would have surfaced) plus an explicit artifact list and,
+when `task.json.worktree_path` is set, a one-line worktree reminder:
 
 ```
 <workflow-state>
-Task: redis-coordination (in_progress)
-Task dir: .trellis/tasks/10-03-redis-coordination
+Task: architecture-completion-orchestration (in_progress)
+Task dir: .trellis/tasks/10-06-architecture-completion-orchestration
+Worktree: /Users/lyston/PycharmProjects/fg-10-06-... — write code there, keep the main checkout clean (AGENTS.md parallel-isolation rule).
 Read before editing: prd.md, design.md, implement.md in that directory.
 #### 2.1 Implement `[required · repeatable]`
 
@@ -107,12 +109,22 @@ Read before editing: prd.md, design.md, implement.md in that directory.
 </workflow-state>
 ```
 
-527 bytes for `in_progress`, 1575 for `planning` (its 1.1 detail is longer), and
-**still deduped per status** — the step text is byte-stable while the status is,
-so a task costs one message per status change, not one per turn. The step text
-is read from disk each turn but returned from a per-process cache, keeping the
-repeated python spawn off the hot path. `--platform pi` matters: without it the
-step renders the Claude Code/Cursor/dispatch-platform text.
+**Every turn, not just on status change.** The dedup-from-§3 is a same-turn
+cache (the 1.5s window in `getTurnCtx`); it never survives across user turns.
+Deduping across turns is what created the two symptoms above: no_task lost its
+triage prompt after turn 1, and an active task lost its artifact list after the
+first injection. Measured cost: no_task 472 B, in_progress 738 B, planning
+1575 B — about 1.5% of a 40 KB request.
+
+This also kills the compaction duplicate. The same-text key used to break at
+every compaction because Magic Context rewrites history, so a session produced
+nine duplicates — four of them adjacent. Re-asserting unconditionally does not
+need the key to be perfect; the 1.5s window is the only dedup that matters.
+
+The step text is read from disk each turn but returned from a per-process cache
+(`stepDetailCache`), keeping the repeated python spawn off the hot path.
+`--platform pi` matters: without it the step renders the Claude Code/Cursor
+dispatch text.
 
 Two smaller fixes rode along: a stale runtime pointer naming an archived task
 directory now falls back to `no_task` instead of suppressing the triage

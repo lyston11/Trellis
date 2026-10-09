@@ -1157,12 +1157,14 @@ function workflowBreadcrumb(root: string, key: string | null): string {
   // header the model cannot act on.
   let status = "",
     id = "",
-    taskDir = "";
+    taskDir = "",
+    worktreePath = "";
   if (dir) {
     try {
       const d = JSON.parse(readText(join(dir, "task.json"))) as JsonObject;
       status = str(d.status) ?? "";
       id = str(d.id) ?? dir.split(/[\\/]/).pop() ?? "";
+      worktreePath = str(d.worktree_path) ?? "";
       if (status) taskDir = dir;
     } catch {}
   }
@@ -1182,6 +1184,15 @@ function workflowBreadcrumb(root: string, key: string | null): string {
     );
     lines.push(`Task: ${id || taskDir.split(/[\\/]/).pop()} (${status || "unknown"})`);
     lines.push(`Task dir: ${relative(root, taskDir).replace(/\\/g, "/")}`);
+    // The project-level parallel-isolation rule lives in AGENTS.md as 9 prose
+    // bullets; it is fully injected but easy to lose at turn 200. The actual
+    // worktree is recorded in task.json by the after_start hook, so the
+    // breadcrumb can state it as one line — the model no longer has to find
+    // the rule in a 124-line document to follow it.
+    if (worktreePath)
+      lines.push(
+        `Worktree: ${worktreePath} — write code there, keep the main checkout clean (AGENTS.md parallel-isolation rule).`,
+      );
     if (artifacts.length)
       lines.push(`Read before editing: ${artifacts.join(", ")} in that directory.`);
     lines.push(
@@ -1919,11 +1930,13 @@ export default function trellisExtension(pi: {
   // root's task/runtime context on every root transition so the agent never
   // keeps following the previous project's instructions.
   const lastPersistedRoot = new Map<string, string>();
-  // Monotonic stamp used only to keep the no_task breadcrumb out of its own
-  // dedup. It counts *sends*, not cached turns: getTurnCtx serves the same
-  // cached breadcrumb for 1.5s, so a stamp carried in the cache would repeat
-  // across two rapid turns and the message would be dropped again.
+  // Monotonic stamps used only to keep the breadcrumbs out of their own dedup.
+  // They count *sends*, not cached turns: getTurnCtx serves the same cached
+  // breadcrumb for 1.5s, so a stamp carried in the cache would repeat across
+  // two rapid turns and the message would be dropped again. See the comment in
+  // the before_agent_start handler for why both statuses re-assert every turn.
   let noTaskSendSeq = 0;
+  let taskSendSeq = 0;
 
   // Toggle only the latest subagent native card; do not use Pi global tool expansion.
   const toggleDetail = (ctx: PiExtensionContext) => {
@@ -2180,12 +2193,22 @@ export default function trellisExtension(pi: {
     // (Pi registers no Task/Agent tool) and the phase index that used to
     // re-assert the triage rules every turn is gone. Deduping it would leave
     // that instruction in turn 1 only, buried under everything after it.
-    // Re-asserting it costs ~450 bytes per turn, so keep it; the moment a task
-    // exists the breadcrumb varies by status and dedups exactly as before.
+    //
+    // An active task is not the escape hatch it looks like either: its step
+    // detail is the only per-turn text that names the task artifacts, and it
+    // vanishes the moment the persisted copy is older than whatever the model
+    // is doing now. Compaction and context_edit both rewrite history, so a
+    // "same text" key would have produced no message at exactly the turns the
+    // reminder was most needed (measured: nine duplicates in one pre-patch
+    // session, all immediately after compaction).
+    //
+    // Re-asserting every turn costs ~500 bytes next to a ~40 KB request. Keep
+    // the dedup only as a same-turn cache (the 1.5s window above), never as a
+    // cross-turn one.
     const noTask = /^Status:\s*no_task\b/m.test(turn.wf);
     const stateKey = noTask
       ? `${root}\u0000${turn.wf}\u0000${++noTaskSendSeq}`
-      : `${root}\u0000${turn.wf}`;
+      : `${root}\u0000${turn.wf}\u0000${++taskSendSeq}`;
     // Re-assert the current root's context on project switches: when the
     // session returns to an unchanged root, the root-scoped lastSent* maps
     // alone would leave the previous project's persisted update as the most
