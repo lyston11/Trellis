@@ -36,7 +36,7 @@ Branch `local/pi-inline-context`, on top of `upstream/main`:
 | `perf(pi): dedup runtime messages on a small state key` | template ext | Stop re-appending a snapshot whenever git status changes; no_task stays exempt (see below) |
 | `fix(pi): carry the phase step and the artifact list in the breadcrumb` | template ext | An active task used to dedup per status, which meant its step detail vanished once persisted. It now re-asserts every turn and names the task's worktree, so the model keeps seeing "cd there" and "read prd.md first" instead of losing it in a 124-line AGENTS.md. |
 | `fix(pi): key overview and pointer snapshots by task, not just session` | template ext | A mid-session task switch must rebuild them |
-| `chore(pi): stop declaring trellis_subagent to the model by default` | template ext | `defaultActive: false` — still callable, no longer auto-selected |
+| `feat(pi): remove trellis_subagent entirely, keep inline workflow` | template ext | The tool spawned a cold pi subprocess per dispatch and held the main session hostage; the user has no use for it. Removes the registration, the alt+o shortcut, the native-card rendering, the runPi/runSubagent pipeline, the CLI resolver, and the agent frontmatter parser. The inline workflow (context injection) is unchanged. Supersedes `chore(pi): stop declaring trellis_subagent to the model by default`. |
 | `feat(workflow): treat Pi as an inline platform` | `workflow.md` template | Pi reads `planning`/`in_progress` only; the `-inline` bodies were Codex-only |
 | `chore: sync this repo's own Pi assets with the updated templates` | `.pi/`, `.trellis/` | The repo runs Trellis on itself |
 
