@@ -2112,7 +2112,18 @@ export default function trellisExtension(pi: {
     // Volatile state travels as an append-only persisted message. Dedup on a
     // small state key (root + breadcrumb) instead of the full text, so git
     // status or task-tree churn no longer appends a fresh snapshot per turn.
-    const stateKey = `${root}\u0000${turn.wf}`;
+    //
+    // With no active task the breadcrumb is the only thing that asks the model
+    // to consider creating one: Phase 2's dispatch instructions do not apply
+    // (Pi registers no Task/Agent tool) and the phase index that used to
+    // re-assert the triage rules every turn is gone. Deduping it would leave
+    // that instruction in turn 1 only, buried under everything after it.
+    // Re-asserting it costs ~450 bytes per turn, so keep it; the moment a task
+    // exists the breadcrumb varies by status and dedups exactly as before.
+    const noTask = /^Status:\s*no_task\b/m.test(turn.wf);
+    const stateKey = noTask
+      ? `${root}\u0000${turn.wf}\u0000${turn.ts}`
+      : `${root}\u0000${turn.wf}`;
     // Re-assert the current root's context on project switches: when the
     // session returns to an unchanged root, the root-scoped lastSent* maps
     // alone would leave the previous project's persisted update as the most

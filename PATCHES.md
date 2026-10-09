@@ -33,7 +33,7 @@ Branch `local/pi-inline-context`, on top of `upstream/main`:
 |---|---|---|
 | `fix(pi): drop the first-reply notice and the per-turn phase index` | template ext | Remove two pure-noise injections |
 | `perf(pi): stop broadcasting the implement sub-agent context every turn` | template ext | Replace the full task context with a task pointer + curated manifest list |
-| `perf(pi): dedup runtime messages on a small state key` | template ext | Stop re-appending a snapshot whenever git status changes |
+| `perf(pi): dedup runtime messages on a small state key` | template ext | Stop re-appending a snapshot whenever git status changes; no_task stays exempt (see below) |
 | `fix(pi): key overview and pointer snapshots by task, not just session` | template ext | A mid-session task switch must rebuild them |
 | `chore(pi): stop declaring trellis_subagent to the model by default` | template ext | `defaultActive: false` — still callable, no longer auto-selected |
 | `feat(workflow): treat Pi as an inline platform` | `workflow.md` template | Pi reads `planning`/`in_progress` only; the `-inline` bodies were Codex-only |
@@ -52,6 +52,31 @@ references. The task pointer therefore lists each entry as `path — reason`
 `taskCtxSnapshot` were keyed only by session, so switching tasks mid-session
 left the overview describing the old task *and the task pointer aimed at the
 old task's directory*. Both keys now include `readTaskDir(root, key)`.
+
+**`no_task` had to be exempt from the dedup.** Dropping the phase index
+removed the only thing that re-asserted the triage rules every turn, and on Pi
+no other channel covers for it:
+
+- Phase 2's dispatch instructions do not apply — Pi registers no Task/Agent
+tool, so "dispatch `trellis-implement` / `trellis-check`" is unactionable and
+the model correctly edits inline.
+- The system prompt's `<ready>` is generic ("decide whether to create,
+continue, or skip a Trellis task") and the `project_context` block keeps only
+the weak line "跨模块、需求不清或需要持续跟踪的工作先创建 Trellis task".
+- `<workflow-state>` is therefore the *only* concrete instruction ("Complex
+task: ask whether you may create a Trellis task and enter planning").
+
+With `stateKey = root + breadcrumb` it was injected once per session and then
+buried: 2026-10-09 15:26 familygraph session, `Status: no_task` at message 7 of
+233, the user ending up saying "先创建trellis任务再执行" by hand. Pre-optimisation
+sessions show the opposite pattern — the phase index appeared 85 times in one
+transcript, which incidentally kept the same rules in view.
+
+`stateKey` therefore appends `turn.ts` while the breadcrumb reports `no_task`
+(~422-byte breadcrumb per turn). Once a task exists the breadcrumb varies by
+status and dedups exactly as before. Same trade-off applies to the full
+phase-index restore: on Pi most of it is Claude Code/Cursor/Codex-specific and
+only `### Request Triage` + `### Active Task Routing` do work.
 
 ## Known limitation
 
