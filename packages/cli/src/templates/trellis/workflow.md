@@ -51,6 +51,14 @@ python3 ./.trellis/scripts/task.py archive <name>        # move to archive/{year
 python3 ./.trellis/scripts/task.py list [--mine] [--status <s>]
 python3 ./.trellis/scripts/task.py list-archive
 
+# Task coordination (declare before editing; `start` enforces it)
+python3 ./.trellis/scripts/task.py claim-paths <name> <path>... [--shared <path>...]
+python3 ./.trellis/scripts/task.py set-resource <name> [--group <g>] [--lane <l>]
+python3 ./.trellis/scripts/task.py add-blocker <name> <blocker>   # explicit ordering
+python3 ./.trellis/scripts/task.py integration-claim <name>      # one integrator per lane
+python3 ./.trellis/scripts/task.py integration-release <name>
+python3 ./.trellis/scripts/task.py preflight <name>              # read-only, before merging
+
 # Code-spec context (injected into implement/check agents via JSONL).
 # `implement.jsonl` / `check.jsonl` are seeded (empty) on `task create` for sub-agent-capable
 # platforms; the AI curates real spec + research entries during planning. `validate` fails
@@ -170,9 +178,37 @@ Phase 3: Finish  → verify, update spec, commit, and wrap up
 
 Use a parent task when one user request contains several independently verifiable deliverables. The parent task owns the source requirement set, the task map, cross-child acceptance criteria, and final integration review; it normally should not be the implementation target unless it also has direct work.
 
-Use child tasks for deliverables that can be planned, implemented, checked, and archived independently. Parent/child structure is not a dependency system: if one child must wait for another, write that ordering in the child `prd.md` / `implement.md` and keep each child's acceptance criteria testable.
+Use child tasks for deliverables that can be planned, implemented, checked, and archived independently. Parent/child structure is not a dependency system: if one child must wait for another, write that ordering in the child `prd.md` / `implement.md`, record it with `task.py add-blocker <child> <blocker>` so `start` can enforce it, and keep each child's acceptance criteria testable.
 
 Create new children with `task.py create "<title>" --slug <name> --parent <parent-dir>`. Link existing tasks with `task.py add-subtask <parent> <child>`, and unlink mistakes with `task.py remove-subtask <parent> <child>`.
+
+### Task Coordination (parallel work)
+
+Tasks declare the resources they intend to occupy so overlap is caught at `start` instead of at merge.
+The declaration lives in `task.json.coordination`:
+
+- `owned_paths` — repository-relative files or globs this task will edit. `shared_paths` records the same
+  intent for paths known to be contended; it does **not** waive the conflict check.
+- `serialization_group` — a named mutex. Two `in_progress` tasks in the same group cannot coexist.
+- `blocked_by` — explicit, machine-checked ordering. This is what makes a child wait, not tree position.
+- `integration_lane` / `integration_active` — the serial integration queue. Ordinary development does not
+  occupy the lane; `integration-claim` does, and `integration-release` (or archive) frees it.
+
+`task.py start` checks dependencies and active claims **before** writing either the session pointer or
+`task.json.status`, so a refused start leaves both untouched. Only `in_progress` tasks hold resources —
+planning tasks never block anyone, so drafting many tasks is safe.
+
+Matching is deliberately conservative: exact files, directory prefixes and recursive globs are compared,
+and anything that cannot be normalized or compared counts as a conflict rather than a pass. Paths must be
+repository-relative; absolute paths and `..` are rejected.
+
+Projects list their own contended resources under `coordination.default_serialized_paths` in
+`.trellis/config.yaml` (for example `.trellis/spec/**` and migration directories). Two tasks that touch the
+same configured resource are refused even when their own `owned_paths` do not overlap.
+
+`task.py preflight <name>` is read-only. It checks status, branch, worktree cleanliness, changed paths
+against `owned_paths`, the integration lane, and resource conflicts. It never merges, commits, pushes,
+archives or deletes. Run it immediately before integrating, and integrate one task at a time.
 
 <!-- Per-turn breadcrumb: shown when there is no active task (before Phase 1) -->
 
@@ -195,7 +231,7 @@ Preserve existing task fields and artifacts. If the correct status cannot be det
 - 1.1 Requirement exploration `[required · repeatable]` (`prd.md`; complex tasks also need `design.md` + `implement.md`)
 - 1.2 Research `[optional · repeatable]`
 - 1.3 Configure context `[required · once]` — Claude Code, Cursor, OpenCode, Codex, Kiro, Gemini, Qoder, CodeBuddy, Copilot, Droid, Oh My Pi, ZCode, Snow, Reasonix, Grok, Kimi Code (sub-agent-dispatch platforms only; inline platforms skip)
-- 1.4 Activate task `[required · once]` (review gate, then `task.py start`; status → in_progress)
+- 1.4 Activate task `[required · once]` (review gate, then `task.py start`; status → in_progress). Declare `owned_paths` for shared files and `blocked_by` for ordering first — `start` refuses overlapping claims before it writes anything.
 - 1.5 Completion criteria
 
 <!-- Per-turn breadcrumb: shown throughout Phase 1 (status='planning') -->
@@ -204,6 +240,7 @@ Preserve existing task fields and artifacts. If the correct status cannot be det
 Load `trellis-brainstorm`; stay in planning.
 Lightweight: `prd.md` can be enough. Complex: finish `prd.md`, `design.md`, and `implement.md`; ask for review before `task.py start`.
 Multi-deliverable scope: consider a parent task plus independently verifiable child tasks; dependencies must be written in child artifacts, not implied by tree position.
+Parallel work: declare `owned_paths` for every file you will touch and record ordering with `task.py add-blocker`; `start` refuses overlapping claims.
 Inline mode (this project): skip jsonl curation; Phase 2 reads artifacts/specs via `trellis-before-dev`.
 [/workflow-state:planning]
 
@@ -219,6 +256,7 @@ Inline mode (this project): skip jsonl curation; Phase 2 reads artifacts/specs v
 Load `trellis-brainstorm`; stay in planning.
 Lightweight: `prd.md` can be enough. Complex: finish `prd.md`, `design.md`, and `implement.md`; ask for review before `task.py start`.
 Multi-deliverable scope: consider a parent task plus independently verifiable child tasks; dependencies must be written in child artifacts, not implied by tree position.
+Parallel work: declare `owned_paths` for every file you will touch and record ordering with `task.py add-blocker`; `start` refuses overlapping claims.
 Inline mode: skip jsonl curation; Phase 2 reads artifacts/specs via `trellis-before-dev`.
 [/workflow-state:planning-inline]
 
@@ -239,6 +277,7 @@ Sub-agent dispatch protocol applies to all platforms and all sub-agents, includi
 Flow: `trellis-before-dev` -> edit -> `trellis-check` -> validation -> `trellis-update-spec` -> commit (Phase 3.4) -> `/trellis:finish-work`.
 Do not dispatch implement/check sub-agents in this project; the main session edits code directly.
 Read context: `prd.md` -> `design.md if present` -> `implement.md if present`, plus relevant spec/research loaded by skills.
+Before integrating: run `task.py preflight <name>` and hold the integration lane with `integration-claim`; one task integrates at a time.
 [/workflow-state:in_progress]
 
 <!-- Per-turn breadcrumb: shown while status='in_progress' when
@@ -251,6 +290,7 @@ Read context: `prd.md` -> `design.md if present` -> `implement.md if present`, p
 Flow: `trellis-before-dev` -> edit -> `trellis-check` -> validation -> `trellis-update-spec` -> commit (Phase 3.4) -> `/trellis:finish-work`.
 Do not dispatch implement/check sub-agents in inline mode.
 Read context: `prd.md` -> `design.md if present` -> `implement.md if present`, plus relevant spec/research loaded by skills.
+Before integrating: run `task.py preflight <name>` and hold the integration lane with `integration-claim`; one task integrates at a time.
 [/workflow-state:in_progress-inline]
 
 ### Phase 3: Finish

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/cli/backend/commands-update.md", "reason": "Verify update dry-run and managed-file safety"}
+{"file": ".trellis/spec/cli/backend/quality-guidelines.md", "reason": "Verify CLI lint/typecheck/test/build quality"}

@@ -323,6 +323,54 @@ describe("trellis template constants", () => {
     }
   });
 
+  it("workflow.md documents the task coordination contract", () => {
+    expect(workflowMdTemplate).toContain("### Task Coordination (parallel work)");
+    for (const field of [
+      "`owned_paths`",
+      "`serialization_group`",
+      "`blocked_by`",
+      "`integration_lane`",
+    ]) {
+      expect(workflowMdTemplate).toContain(field);
+    }
+    // The gate's defining property: a refused start writes nothing.
+    expect(workflowMdTemplate).toContain(
+      "before** writing either the session pointer",
+    );
+    // Only running tasks hold resources, so drafting many tasks stays safe.
+    expect(workflowMdTemplate).toContain(
+      "planning tasks never block anyone",
+    );
+    expect(workflowMdTemplate).toContain(
+      "task.py integration-claim <name>",
+    );
+    expect(workflowMdTemplate).toContain("task.py preflight <name>");
+    expect(workflowMdTemplate).toContain(
+      "coordination.default_serialized_paths",
+    );
+    // Preflight is read-only; saying so prevents it being used as the merge step.
+    expect(workflowMdTemplate).toContain(
+      "It never merges, commits, pushes",
+    );
+  });
+
+  it("workflow.md coordination guidance reaches both planning and in_progress breadcrumbs", () => {
+    for (const status of [
+      "planning",
+      "planning-inline",
+      "in_progress",
+      "in_progress-inline",
+    ]) {
+      const block = workflowStateBreadcrumb(status);
+      if (status.startsWith("planning")) {
+        expect(block).toContain("declare `owned_paths`");
+      } else {
+        expect(block).toContain("task.py preflight <name>");
+        expect(block).toContain("integration-claim");
+      }
+    }
+  });
+
   it("workflow.md ships a task_error breadcrumb that repairs the existing task", () => {
     const taskError = workflowStateBreadcrumb("task_error");
     expect(taskError).toContain("Do not create or activate another task");

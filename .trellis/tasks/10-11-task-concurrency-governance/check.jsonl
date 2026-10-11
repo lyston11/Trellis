@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/cli/backend/script-conventions.md", "reason": "Check parent runtime and template script parity"}
+{"file": ".trellis/spec/cli/backend/quality-guidelines.md", "reason": "Check parent CLI quality and release gates"}

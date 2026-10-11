@@ -1,0 +1,29 @@
+{
+  "id": "task-concurrency-governance",
+  "name": "task-concurrency-governance",
+  "title": "Trellis 任务并行隔离与全局模板治理",
+  "description": "增加任务范围冲突阻断、串行资源与依赖调度、唯一集成通道约束，并发布到所有生成模板",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": "cli",
+  "priority": "P2",
+  "creator": "lyston",
+  "assignee": "lyston",
+  "createdAt": "2026-10-11",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-11-task-resource-conflict-guard",
+    "10-11-task-governance-template-rollout"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
