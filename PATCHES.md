@@ -38,9 +38,23 @@ Branch `local/pi-inline-context`, on top of `upstream/main`:
 | `fix(pi): key overview and pointer snapshots by task, not just session` | template ext | A mid-session task switch must rebuild them |
 | `feat(pi): remove trellis_subagent entirely, keep inline workflow` | template ext | The tool spawned a cold pi subprocess per dispatch and held the main session hostage; the user has no use for it. Removes the registration, the alt+o shortcut, the native-card rendering, the runPi/runSubagent pipeline, the CLI resolver, and the agent frontmatter parser. The inline workflow (context injection) is unchanged. Supersedes `chore(pi): stop declaring trellis_subagent to the model by default`. |
 | `feat(workflow): treat Pi as an inline platform` | `workflow.md` template | Pi reads `planning`/`in_progress` only; the `-inline` bodies were Codex-only |
+| `fix(pi): restore the cmdHasTrellisCtx guard` | template ext | `feat(pi): remove trellis_subagent entirely` deleted the definition with the rest of the sub-agent helpers but left the `tool_call` call site, so the handler threw `ReferenceError` and Pi blocked **every** bash call. Restored with a command-position regex (start, `env`/`export`, or after `;`/`&&`/`|`) instead of the old start-only one. |
 | `chore: sync this repo's own Pi assets with the updated templates` | `.pi/`, `.trellis/` | The repo runs Trellis on itself |
 
-## Two non-obvious points
+## Non-obvious points
+
+**A deleted helper still had a call site.** `cmdHasTrellisCtx` sat between the
+sub-agent helpers `feat(pi): remove trellis_subagent entirely` deleted, so it went
+with them — but the `tool_call` hook still called it. Pi's `emitToolCall` has no
+try/catch (unlike `before_agent_start`), so the `ReferenceError` propagated to
+`prepareToolCall` and turned into an error tool result: bash never ran. The
+symptom in a live session is a tool result reading
+`cmdHasTrellisCtx is not defined`, and nothing else in the extension looks wrong —
+the breadcrumb, the startup snapshot and the dedup all work.
+
+This is also why every deployed copy has to be checked, not just the template:
+the `trellis init` templates and the `.pi/extensions/trellis/index.ts` copies in
+the projects all come from the same bytes.
 
 **`implement.jsonl` / `check.jsonl` had to stay reachable.** They were
 delivered *only* by the full task-context injection. Neither `trellis-before-dev`
