@@ -39,6 +39,9 @@ Branch `local/pi-inline-context`, on top of `upstream/main`:
 | `feat(pi): remove trellis_subagent entirely, keep inline workflow` | template ext | The tool spawned a cold pi subprocess per dispatch and held the main session hostage; the user has no use for it. Removes the registration, the alt+o shortcut, the native-card rendering, the runPi/runSubagent pipeline, the CLI resolver, and the agent frontmatter parser. The inline workflow (context injection) is unchanged. Supersedes `chore(pi): stop declaring trellis_subagent to the model by default`. |
 | `feat(workflow): treat Pi as an inline platform` | `workflow.md` template | Pi reads `planning`/`in_progress` only; the `-inline` bodies were Codex-only |
 | `fix(pi): restore the cmdHasTrellisCtx guard` | template ext | `feat(pi): remove trellis_subagent entirely` deleted the definition with the rest of the sub-agent helpers but left the `tool_call` call site, so the handler threw `ReferenceError` and Pi blocked **every** bash call. Restored with a command-position regex (start, `env`/`export`, or after `;`/`&&`/`|`) instead of the old start-only one. |
+| `refactor(pi): drop the context-injection path inline mode never reaches` | template ext | `buildContext` kept the whole #441 machinery alive (truncateUtf8, ContextBudget, the binary/truncate/index notices, readContextInjectionLimits, TRELLIS_AGENT_JSONL) although the task pointer had replaced the full context broadcast, so nothing called any of it. ~280 lines deleted; `readJsonlEntries` stays, the pointer uses it. |
+| `fix(pi): escape single quotes with the standard '\'' sequence` | template ext | `shellQuote` emitted one backslash too few, so an embedded single quote closed the quoted string instead of surviving as data. The test had always expected the standard form. |
+| `test(pi): sync pi.test.ts with inline mode` | test | The branch deleted eleven helpers the test file re-exported from the template, so `loadExtensionInternals()` threw before a single assertion ran (21 of 47 cases red). Dropped the sub-agent suites and re-pointed the survivors at pointer/breadcrumb behaviour. |
 | `chore: sync this repo's own Pi assets with the updated templates` | `.pi/`, `.trellis/` | The repo runs Trellis on itself |
 
 ## Non-obvious points
@@ -55,6 +58,27 @@ the breadcrumb, the startup snapshot and the dedup all work.
 This is also why every deployed copy has to be checked, not just the template:
 the `trellis init` templates and the `.pi/extensions/trellis/index.ts` copies in
 the projects all come from the same bytes.
+
+**Two things the branch left behind, and how they hid.** The dead-code removal
+was invisible to any test because the test file could not load at all: it
+re-exported helpers (`normalizeAgent`, `buildPiArgs`, `servingSessionId`, …) that
+went out with the sub-agent feature, so `loadExtensionInternals()` threw and
+took every case in the file with it — including the ones covering behaviour that
+still existed. A green-looking subset (26 of 47) came only from the one suite
+that does not call it.
+
+The `shellQuote` bug is the same shape: the escape sequence was written as
+`'\''` in a template literal instead of `'\\''`, which renders as
+
+```
+before:  `'${v.replace(/'/g, `'\''`)}'`    -> with 'quote' => 'with 'quote''
+after:   `'${v.replace(/'/g, `'\\''`)}'`   -> with 'quote' => 'with '\''quote'\'''
+```
+
+Both variants read the same in a diff at a glance, and only the second is a
+valid shell escape. `cmdHasTrellisCtx` guards the injected
+`export TRELLIS_CONTEXT_ID='<key>'; …`, so a key carrying a quote would have
+broken the command it prefixes.
 
 **`implement.jsonl` / `check.jsonl` had to stay reachable.** They were
 delivered *only* by the full task-context injection. Neither `trellis-before-dev`
@@ -87,9 +111,11 @@ buried: 2026-10-09 15:26 familygraph session, `Status: no_task` at message 7 of
 sessions show the opposite pattern — the phase index appeared 85 times in one
 transcript, which incidentally kept the same rules in view.
 
-`stateKey` therefore appends a per-send counter while the breadcrumb reports
-`no_task` (~422-byte breadcrumb per turn). Once a task exists the breadcrumb
-varies by status and dedups exactly as before. Same trade-off applies to the full
+`stateKey` therefore appended a per-send counter while the breadcrumb reported
+`no_task` (~422-byte breadcrumb per turn). That counter is gone: once the
+breadcrumb also carried the active step (below), the `in_progress` case needed
+the same treatment, so *both* statuses re-assert on every turn and the 1.5s
+`getTurnCtx` window is the only dedup left. Same trade-off applies to the full
 phase-index restore: on Pi most of it is Claude Code/Cursor/Codex-specific and
 only `### Request Triage` + `### Active Task Routing` do work.
 
