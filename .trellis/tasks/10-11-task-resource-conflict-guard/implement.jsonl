@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/cli/backend/script-conventions.md", "reason": "Runtime Python task scripts, path validation, dogfood/template parity and compatibility conventions"}
+{"file": ".trellis/spec/cli/backend/workflow-state-contract.md", "reason": "Task lifecycle, active status and workflow-state contracts"}

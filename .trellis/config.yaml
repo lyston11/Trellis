@@ -164,3 +164,11 @@ channel:
 #
 # prompt_injection:
 #   skip_keyword: "no-trellis"   # "" disables the escape hatch entirely
+
+# Task coordination defaults. Projects may extend this list with their own shared resources.
+coordination:
+  default_serialized_paths:
+    - ".trellis/spec/**"
+    - "backend/migrations/versions/**"
+    - "migrations/**"
+

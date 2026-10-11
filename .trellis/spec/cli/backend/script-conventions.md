@@ -2836,3 +2836,30 @@ Contracts added by task `07-22-script-qol-batch` (#394, #402, meta access):
   half-created directory. `task.py set-meta <dir> <key> <value>` sets/overwrites
   one key on an existing task via the same `resolve_task_dir()` path validation
   as other subcommands. Values are plain strings (no nesting/coercion).
+
+## Task coordination resources (2026-10-11)
+
+`task.json` may contain an optional `coordination` object. New tasks write the
+normalized shape; old tasks without it remain valid and are treated as owning
+no paths:
+
+- `owned_paths` and `shared_paths` are repository-relative POSIX paths/globs.
+  Both participate in conservative overlap checks; `shared_paths` documents
+  intent and does not waive the conflict guard.
+- `serialization_group` blocks simultaneous `in_progress` tasks in the same
+  named group.
+- `blocked_by` is the explicit execution dependency. Parent/child links are
+  organizational and do not imply ordering.
+- `integration_lane` names the serial integration queue and
+  `integration_active` records explicit ownership. Ordinary development does
+  not occupy the lane; use `task.py integration-claim` before integration and
+  `integration-release` after it.
+
+`task.py start` checks dependencies and active execution claims before writing
+status or the session pointer. `task.py preflight` is read-only. It must not
+merge, commit, push, archive, or delete. Any path it cannot safely normalize or
+compare is a conflict, never a reason to allow concurrent work.
+
+The dogfood `.trellis/scripts/` tree and
+`packages/cli/src/templates/trellis/scripts/` must stay byte-identical. Apply
+coordination runtime changes to both trees in the same commit.

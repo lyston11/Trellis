@@ -549,6 +549,15 @@ def cmd_create(args: argparse.Namespace) -> int:
         "parent": None,
         "relatedFiles": [],
         "notes": "",
+        "coordination": {
+            "owned_paths": [],
+            "shared_paths": [],
+            "serialization_group": None,
+            "blocked_by": [],
+            "integration_lane": "main",
+            "integration_active": False,
+            "reserve": False,
+        },
         "meta": meta,
     }
 

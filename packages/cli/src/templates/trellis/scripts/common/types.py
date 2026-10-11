@@ -48,6 +48,7 @@ class TaskData(TypedDict, total=False):
     parent: str | None
     relatedFiles: list[str]
     notes: str
+    coordination: dict
     meta: dict
 
 

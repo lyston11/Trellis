@@ -48,6 +48,19 @@ from common.active_task import (
     set_active_task,
 )
 from common.git import current_branch_name
+from common.coordination import (
+    Coordination,
+    CoordinationError,
+    acquire_coordination_lock,
+    conflicts_for_task,
+    coordination_dict,
+    coordination_from_task,
+    dependency_errors,
+    format_conflicts,
+    normalize_claim,
+    preflight_errors,
+    release_coordination_lock,
+)
 from common.io import (
     describe_json_read_failure,
     read_json_checked,
@@ -77,8 +90,249 @@ from common.task_context import (
 
 
 # =============================================================================
+# Coordination commands
+# =============================================================================
+
+def _coordination_task_data(task_json_path: Path) -> dict | None:
+    data, reason = read_json_checked(task_json_path)
+    if data is None:
+        problem, hint = describe_json_read_failure(task_json_path, reason)
+        print(colored(f"Error: {problem}", Colors.RED), file=sys.stderr)
+        print(hint, file=sys.stderr)
+        return None
+    return data
+
+
+def _write_coordination(task_json_path: Path, data: dict, coordination: Coordination) -> bool:
+    data["coordination"] = coordination_dict(coordination)
+    if not write_json(task_json_path, data):
+        print(colored(f"Error: failed to write {task_json_path}", Colors.RED), file=sys.stderr)
+        return False
+    return True
+
+
+def _resolve_coordination_target(task_input: str, repo_root: Path) -> tuple[Path, dict] | None:
+    target = resolve_task_dir(task_input, repo_root)
+    if target is None:
+        return None
+    data = _coordination_task_data(target / FILE_TASK_JSON)
+    if data is None:
+        return None
+    return target, data
+
+
+def cmd_claim_paths(args: argparse.Namespace) -> int:
+    repo_root = get_repo_root()
+    resolved = _resolve_coordination_target(args.dir, repo_root)
+    if resolved is None:
+        return 1
+    target, data = resolved
+    try:
+        current = coordination_from_task(data)
+        owned = list(current.owned_paths)
+        shared = list(current.shared_paths)
+        for raw in args.paths:
+            normalized = normalize_claim(raw)
+            if normalized not in owned:
+                owned.append(normalized)
+        for raw in args.shared or []:
+            normalized = normalize_claim(raw)
+            if normalized not in shared:
+                shared.append(normalized)
+        updated = Coordination(
+            tuple(owned), tuple(shared), current.serialization_group,
+            current.blocked_by, current.integration_lane, current.integration_active,
+            current.reserve,
+        )
+    except CoordinationError as exc:
+        print(colored(f"Error: invalid coordination claim: {exc}", Colors.RED), file=sys.stderr)
+        return 1
+    return 0 if _write_coordination(target / FILE_TASK_JSON, data, updated) else 1
+
+
+def cmd_set_resource(args: argparse.Namespace) -> int:
+    repo_root = get_repo_root()
+    resolved = _resolve_coordination_target(args.dir, repo_root)
+    if resolved is None:
+        return 1
+    target, data = resolved
+    try:
+        current = coordination_from_task(data)
+        updated = Coordination(
+            current.owned_paths, current.shared_paths,
+            args.group.strip() if args.group else current.serialization_group,
+            current.blocked_by,
+            args.lane.strip() if args.lane else current.integration_lane,
+            current.integration_active,
+            current.reserve,
+        )
+        coordination_from_task({"coordination": coordination_dict(updated)})
+    except CoordinationError as exc:
+        print(colored(f"Error: invalid coordination resource: {exc}", Colors.RED), file=sys.stderr)
+        return 1
+    return 0 if _write_coordination(target / FILE_TASK_JSON, data, updated) else 1
+
+
+def _update_blocker(args: argparse.Namespace, remove: bool) -> int:
+    repo_root = get_repo_root()
+    resolved = _resolve_coordination_target(args.dir, repo_root)
+    blocker = resolve_task_dir(args.blocker, repo_root)
+    if resolved is None or blocker is None:
+        print(colored("Error: task and blocker must resolve to active or archived tasks", Colors.RED), file=sys.stderr)
+        return 1
+    target, data = resolved
+    current = coordination_from_task(data)
+    names = list(current.blocked_by)
+    blocker_name = blocker.name
+    if remove:
+        names = [name for name in names if name != blocker_name]
+    elif blocker_name not in names:
+        names.append(blocker_name)
+    updated = Coordination(
+        current.owned_paths, current.shared_paths, current.serialization_group,
+        tuple(names), current.integration_lane, current.integration_active,
+        current.reserve,
+    )
+    if not remove:
+        errors = dependency_errors(
+            target.name,
+            {**data, "coordination": coordination_dict(updated)},
+            get_tasks_dir(repo_root),
+        )
+        if any("cycle" in error for error in errors):
+            print(colored("Error: blocker would create a dependency cycle", Colors.RED), file=sys.stderr)
+            return 1
+    return 0 if _write_coordination(target / FILE_TASK_JSON, data, updated) else 1
+
+
+def cmd_add_blocker(args: argparse.Namespace) -> int:
+    return _update_blocker(args, remove=False)
+
+
+def cmd_remove_blocker(args: argparse.Namespace) -> int:
+    return _update_blocker(args, remove=True)
+
+
+def cmd_integration_claim(args: argparse.Namespace) -> int:
+    repo_root = get_repo_root()
+    resolved = _resolve_coordination_target(args.dir, repo_root)
+    if resolved is None:
+        return 1
+    target, data = resolved
+    try:
+        current = coordination_from_task(data)
+        if current.integration_active:
+            print(colored(f"Integration lane already claimed by {target.name}", Colors.YELLOW))
+            return 0
+        candidate = Coordination(
+            current.owned_paths, current.shared_paths, current.serialization_group,
+            current.blocked_by, current.integration_lane, True, current.reserve,
+        )
+        # Serialize check-then-write: two agents claiming at the same instant
+        # would otherwise both observe an empty lane and both write.
+        lock = acquire_coordination_lock(repo_root)
+        try:
+            conflicts = conflicts_for_task(
+                target.name, {**data, "coordination": coordination_dict(candidate)},
+                get_tasks_dir(repo_root), repo_root, integration_only=True,
+            )
+            if conflicts:
+                print(colored(format_conflicts(conflicts), Colors.RED), file=sys.stderr)
+                return 1
+            if not _write_coordination(target / FILE_TASK_JSON, data, candidate):
+                return 1
+        finally:
+            release_coordination_lock(lock)
+    except CoordinationError as exc:
+        print(colored(f"Error: invalid coordination resource: {exc}", Colors.RED), file=sys.stderr)
+        return 1
+    print(colored(f"Integration lane claimed: {candidate.integration_lane}", Colors.GREEN))
+    return 0
+
+
+def cmd_integration_release(args: argparse.Namespace) -> int:
+    repo_root = get_repo_root()
+    resolved = _resolve_coordination_target(args.dir, repo_root)
+    if resolved is None:
+        return 1
+    target, data = resolved
+    try:
+        current = coordination_from_task(data)
+    except CoordinationError as exc:
+        print(colored(f"Error: invalid coordination resource: {exc}", Colors.RED), file=sys.stderr)
+        return 1
+    if not current.integration_active:
+        return 0
+    released = Coordination(
+        current.owned_paths, current.shared_paths, current.serialization_group,
+        current.blocked_by, current.integration_lane, False, current.reserve,
+    )
+    if not _write_coordination(target / FILE_TASK_JSON, data, released):
+        return 1
+    print(colored(f"Integration lane released: {released.integration_lane}", Colors.GREEN))
+    return 0
+
+
+def cmd_preflight(args: argparse.Namespace) -> int:
+    repo_root = get_repo_root()
+    resolved = _resolve_coordination_target(args.dir, repo_root)
+    if resolved is None:
+        return 1
+    target, data = resolved
+    try:
+        failures = preflight_errors(target.name, data, get_tasks_dir(repo_root), repo_root)
+    except CoordinationError as exc:
+        failures = [str(exc)]
+    if failures:
+        print(colored("Integration preflight failed:", Colors.RED), file=sys.stderr)
+        for failure in failures:
+            print(f"- {failure}", file=sys.stderr)
+        return 1
+    print(colored(f"Integration preflight passed: {target.name}", Colors.GREEN))
+    return 0
+
+
+# =============================================================================
 # Command: start / finish
 # =============================================================================
+
+def _check_start_coordination(task_name: str, task_json_path: Path, repo_root: Path) -> bool:
+    """Enforce coordination before start writes anything.
+
+    A task.json that cannot be read keeps the documented tolerance contract:
+    `start` still activates the session pointer and reports the read failure.
+    Coordination cannot be evaluated from an unreadable file, so say that
+    explicitly on stderr rather than letting a silent skip look like a pass.
+    """
+    data, reason = read_json_checked(task_json_path)
+    if data is None:
+        problem, hint = describe_json_read_failure(task_json_path, reason)
+        print(
+            colored(
+                f"Warning: {problem}; coordination was not checked for "
+                f"{task_name}.",
+                Colors.YELLOW,
+            ),
+            file=sys.stderr,
+        )
+        print(hint, file=sys.stderr)
+        return True
+    try:
+        dependency_failures = dependency_errors(task_name, data, get_tasks_dir(repo_root))
+        conflicts = conflicts_for_task(task_name, data, get_tasks_dir(repo_root), repo_root)
+    except CoordinationError as exc:
+        print(colored(f"Error: invalid task coordination: {exc}", Colors.RED), file=sys.stderr)
+        return False
+    if dependency_failures:
+        print(colored("Task start blocked by dependencies:", Colors.RED), file=sys.stderr)
+        for failure in dependency_failures:
+            print(f"- {failure}", file=sys.stderr)
+        return False
+    if conflicts:
+        print(colored(format_conflicts(conflicts), Colors.RED), file=sys.stderr)
+        return False
+    return True
+
 
 def _record_start_state(
     task_json_path: Path,
@@ -231,6 +485,11 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 1
 
     task_json_path = full_path / FILE_TASK_JSON
+
+    # Coordination is checked before writing either the session pointer or
+    # task.json status. A rejected start must leave both untouched.
+    if not _check_start_coordination(full_path.name, task_json_path, repo_root):
+        return 1
 
     if not resolve_context_key():
         # Degraded mode: no session identity available.
@@ -690,6 +949,36 @@ def main() -> int:
         help="Start even when implement.jsonl / check.jsonl have no curated entries",
     )
 
+    # claim-paths
+    p_claim = subparsers.add_parser("claim-paths", help="Declare task-owned paths")
+    p_claim.add_argument("dir", help="Task directory")
+    p_claim.add_argument("paths", nargs="+", help="Repository-relative paths or globs")
+    p_claim.add_argument("--shared", nargs="*", help="Paths to report as explicitly shared")
+
+    # set-resource
+    p_resource = subparsers.add_parser("set-resource", help="Set task resource group/lane")
+    p_resource.add_argument("dir", help="Task directory")
+    p_resource.add_argument("--group", help="Serialization group")
+    p_resource.add_argument("--lane", help="Integration lane")
+
+    # blockers
+    p_block = subparsers.add_parser("add-blocker", help="Add an explicit task blocker")
+    p_block.add_argument("dir", help="Task directory")
+    p_block.add_argument("blocker", help="Blocking task directory")
+    p_unblock = subparsers.add_parser("remove-blocker", help="Remove a task blocker")
+    p_unblock.add_argument("dir", help="Task directory")
+    p_unblock.add_argument("blocker", help="Blocking task directory")
+
+    # preflight
+    p_preflight = subparsers.add_parser("preflight", help="Run read-only integration preflight")
+    p_preflight.add_argument("dir", help="Task directory")
+
+    # integration lane
+    p_iclaim = subparsers.add_parser("integration-claim", help="Claim the integration lane")
+    p_iclaim.add_argument("dir", help="Task directory")
+    p_irelease = subparsers.add_parser("integration-release", help="Release the integration lane")
+    p_irelease.add_argument("dir", help="Task directory")
+
     # current
     p_current = subparsers.add_parser("current", help="Show active task")
     p_current.add_argument("--source", action="store_true",
@@ -776,6 +1065,13 @@ def main() -> int:
         "validate": cmd_validate,
         "list-context": cmd_list_context,
         "start": cmd_start,
+        "claim-paths": cmd_claim_paths,
+        "set-resource": cmd_set_resource,
+        "add-blocker": cmd_add_blocker,
+        "remove-blocker": cmd_remove_blocker,
+        "preflight": cmd_preflight,
+        "integration-claim": cmd_integration_claim,
+        "integration-release": cmd_integration_release,
         "current": cmd_current,
         "finish": cmd_finish,
         "set-branch": cmd_set_branch,
