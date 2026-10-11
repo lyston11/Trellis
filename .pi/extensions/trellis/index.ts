@@ -76,6 +76,20 @@ function exists(p: string) {
 function shellQuote(v: string) {
   return `'${v.replace(/'/g, `'\''`)}'`;
 }
+/**
+ * Whether a bash command already carries the Trellis session context id.
+ *
+ * The `tool_call` hook prefixes every bash command with
+ * `export TRELLIS_CONTEXT_ID=...`; this guard keeps it from double-prefixing a
+ * command that already has it (a re-run of a previously rewritten command, or
+ * one the user wrote by hand). Matching only at a command position — start of
+ * the command, after `env`/`export`, or after a shell separator — keeps a mere
+ * mention inside an argument (e.g. `echo TRELLIS_CONTEXT_ID=x`) from
+ * suppressing the injection.
+ */
+function cmdHasTrellisCtx(cmd: string): boolean {
+  return /(^|[;&|]|\benv\s|\bexport\s)\s*TRELLIS_CONTEXT_ID=/.test(cmd);
+}
 function callStr(
   cb: (() => string | undefined) | undefined,
   receiver?: unknown,
