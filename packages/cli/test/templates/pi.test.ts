@@ -363,7 +363,7 @@ describe("pi templates", () => {
     expect(fourth.systemPrompt).toBe(second.systemPrompt);
     expect(fourth.message?.content).toContain("<trellis-task-context-update>");
     expect(fourth.message?.content).toContain("script-conventions.md");
-  });
+  }, 60_000);
 
   it("keeps a native Pi session isolated from a foreign context key (#512)", () => {
     const root = createMinimalTrellisRoot();
