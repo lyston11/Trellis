@@ -1529,17 +1529,19 @@ describe("configurePlatform", () => {
       path.join(tmpDir, ".pi", "extensions", "trellis", "index.ts"),
       "utf-8",
     );
-    expect(extension).toContain("registerTool?.({");
-    expect(extension).toContain('name: "trellis_subagent"');
+    // Inline mode: the extension registers no tool and spawns no child pi, so
+    // what has to hold is the events it does wire and the guard that keeps
+    // TRELLIS_CONTEXT_ID on every bash command.
+    expect(extension).not.toContain("registerTool?.({");
+    expect(extension).not.toContain("trellis_subagent");
     expect(extension).toContain('pi.on?.("session_start"');
+    expect(extension).toContain('pi.on?.("before_agent_start"');
     expect(extension).toContain('pi.on?.("tool_call"');
     expect(extension).toContain("ctx?.sessionManager?.getSessionId");
-    expect(extension).toContain("TRELLIS_PI_CLI_JS");
-    expect(extension).toContain("function formatPiOutput");
-    expect(extension).toContain('"## Trellis Agent Definition"');
+    expect(extension).toContain("cmdHasTrellisCtx");
+    expect(extension).toContain("buildTaskPointer");
     expect(extension).toContain("ctx?.ui?.notify?.(");
     expect(extension).toContain("systemPrompt:");
-    expect(extension).toContain("isTrellisAgent(root, agentName)");
     expect(extension).not.toContain("message: buildTrellisContext");
     expect(extension).not.toContain('message:\n      "Trellis project context');
     expect(extension).not.toContain("persistent: true");

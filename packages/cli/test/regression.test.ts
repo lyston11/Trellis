@@ -7765,7 +7765,7 @@ print(len(entries))
     expect(output).not.toContain("Load the `trellis-before-dev` skill");
   });
 
-  it("[pi] step 2.1 describes extension-backed sub-agent context path", () => {
+  it("[pi] step 2.1 routes Pi through the inline (agent-less) path", () => {
     writeTrellisScripts();
     writeProjectFile(path.join(".trellis", ".developer"), "name=test\n");
     writeProjectFile(
@@ -7784,10 +7784,13 @@ print(len(entries))
       { cwd: tmpDir, encoding: "utf-8" },
     );
 
-    expect(output).toContain("The platform hook/plugin auto-handles");
-    expect(output).toContain("Reads `implement.jsonl`");
-    expect(output).not.toContain("The Codex sub-agent definition auto-handles");
-    expect(output).not.toContain("Load the `trellis-before-dev` skill");
+    // Pi is an inline platform: step 2.1 must send it through the
+    // trellis-before-dev skill and the task artifacts, not through a
+    // sub-agent dispatch whose context a hook injects.
+    expect(output).toContain("Load the `trellis-before-dev` skill");
+    expect(output).toContain("Read `{TASK_DIR}/prd.md`");
+    expect(output).not.toContain("The platform hook/plugin auto-handles");
+    expect(output).not.toContain("Reads `implement.jsonl`");
   });
 
   it("[workflow-v2] --mode phase --platform kilo keeps trellis-before-dev routing (agent-less path)", () => {
@@ -8455,7 +8458,12 @@ print(len(entries))
 
     // Simulate a bare "origin" remote whose default branch is main, while
     // the local checkout stays on a feature branch (#399 item 1 repro).
+    // The fixture path is a sibling of tmpDir, which the OS tmpdir keeps
+    // across runs: a leftover repo from an earlier run already has a `main`
+    // pointing at a different commit, so the push below would be rejected as
+    // a non-fast-forward. Start from a clean directory every time.
     const remotePath = path.join(tmpDir, "..", "origin-bare.git");
+    fs.rmSync(remotePath, { recursive: true, force: true });
     execSync(`git init -q --bare ${JSON.stringify(remotePath)}`, {
       cwd: tmpDir,
     });
@@ -10241,12 +10249,12 @@ describe("regression: pi uses TypeScript extension assets instead of Python hook
     expect(fs.existsSync(path.join(tmpDir, ".pi", "hooks"))).toBe(false);
   });
 
-  it("installs a subagent-capable extension and pull-based agent context", () => {
+  it("installs an inline-mode extension and pull-based agent context", () => {
     const extension = fs.readFileSync(
       path.join(tmpDir, ".pi", "extensions", "trellis", "index.ts"),
       "utf-8",
     );
-    expect(extension).toContain('name: "trellis_subagent"');
+    expect(extension).not.toContain('name: "trellis_subagent"');
     expect(extension).toContain('pi.on?.("before_agent_start"');
     expect(extension).toContain('pi.on?.("tool_call"');
 

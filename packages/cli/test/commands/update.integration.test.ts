@@ -878,9 +878,11 @@ describe("update() integration", () => {
     expect(readProjectFile(MANAGED_FILE)).toBe(expectedGetContext);
     // Prefix, not the whole marker: the inline block gains members as
     // sub-agent-less platforms are added, and this assertion is about the
-    // block surviving the update, not about who is currently in it.
+    // block surviving the update, not about who is currently in it. A member
+    // list would also break the moment one is inserted right after the tag
+    // name, which is exactly what moving Pi into this block did.
     expect(readProjectFile(PATHS.WORKFLOW_GUIDE_FILE)).toContain(
-      "[codex-inline, Kilo, Antigravity, Devin",
+      "[codex-inline,",
     );
     expect(readProjectFile(PATHS.WORKFLOW_GUIDE_FILE)).not.toContain("[Codex]");
 
@@ -1571,9 +1573,9 @@ describe("update() integration", () => {
       "[Gemini, Qoder, Copilot, Reasonix, Trae, Grok, Kimi Code]",
     );
     expect(updated).toContain(
-      "[/Claude Code, Cursor, OpenCode, codex-sub-agent, CodeBuddy, Droid, Pi, ZCode, Snow, Oh My Pi]",
+      "[/Claude Code, Cursor, OpenCode, codex-sub-agent, CodeBuddy, Droid, ZCode, Snow, Oh My Pi]",
     );
-    expect(updated).toContain("[codex-inline, Kilo, Antigravity, Devin");
+    expect(updated).toContain("[codex-inline,");
     expect(updated).not.toContain("[Codex]");
     expect(updated).not.toContain("[Kilo, Antigravity, Windsurf]");
     expect(updated).not.toContain("legacy body");

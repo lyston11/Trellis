@@ -131,7 +131,7 @@ describe("trellis template constants", () => {
     expect(workflowMdTemplate).toContain("#");
   });
 
-  it("marketplace native workflow mirror matches the bundled workflow", () => {
+  it("marketplace native workflow mirror tracks the bundled workflow state machine", () => {
     const repoRoot = fs.existsSync(path.join(process.cwd(), "marketplace"))
       ? process.cwd()
       : path.resolve(process.cwd(), "../..");
@@ -139,7 +139,16 @@ describe("trellis template constants", () => {
       path.join(repoRoot, "marketplace/workflows/native/workflow.md"),
       "utf-8",
     );
-    expect(marketplaceNative).toBe(workflowMdTemplate);
+    // The mirror is a published artifact of the upstream marketplace repo, so
+    // this fork cannot keep it byte-identical to a workflow.md it owns (Pi is
+    // inline here, task coordination was added). What still has to hold is
+    // that both files describe the same state machine: a block renamed or
+    // dropped on either side is drift worth failing on.
+    const states = (text: string) =>
+      [...text.matchAll(/^\[workflow-state:([A-Za-z0-9_-]+)\]$/gm)]
+        .map((match) => match[1])
+        .sort();
+    expect(states(marketplaceNative)).toEqual(states(workflowMdTemplate));
   });
 
   it("marketplace TDD workflow planning breadcrumbs include behavior gates", () => {
@@ -179,7 +188,7 @@ describe("trellis template constants", () => {
     const implement = stepSection("2.1");
     const hookAutoBlock = platformBlock(
       implement,
-      "[Claude Code, Cursor, OpenCode, codex-sub-agent, CodeBuddy, Droid, Pi, ZCode, Snow, Oh My Pi]",
+      "[Claude Code, Cursor, OpenCode, codex-sub-agent, CodeBuddy, Droid, ZCode, Snow, Oh My Pi]",
     );
     const pullBasedMarker =
       "[Gemini, Qoder, Copilot, Reasonix, Trae, Grok, Kimi Code]";

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
-import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -14,4 +14,9 @@ git submodule update --init marketplace
 # and required manually repairing every worktree's core.worktree/core.bare.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
 
+# Several integration tests spawn the real CLI (`bin/trellis.js`), which loads
+# `packages/cli/dist/`; without a build they fail with a module-not-found exit
+# code on a tree that has never been built.
+pnpm build
+
 pnpm test
