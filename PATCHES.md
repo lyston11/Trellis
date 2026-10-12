@@ -41,7 +41,7 @@ Branch `local/pi-inline-context`, on top of `upstream/main`:
 | `fix(pi): restore the cmdHasTrellisCtx guard` | template ext | `feat(pi): remove trellis_subagent entirely` deleted the definition with the rest of the sub-agent helpers but left the `tool_call` call site, so the handler threw `ReferenceError` and Pi blocked **every** bash call. Restored with a command-position regex (start, `env`/`export`, or after `;`/`&&`/`|`) instead of the old start-only one. |
 | `refactor(pi): drop the context-injection path inline mode never reaches` | template ext | `buildContext` kept the whole #441 machinery alive (truncateUtf8, ContextBudget, the binary/truncate/index notices, readContextInjectionLimits, TRELLIS_AGENT_JSONL) although the task pointer had replaced the full context broadcast, so nothing called any of it. ~280 lines deleted; `readJsonlEntries` stays, the pointer uses it. |
 | `fix(pi): escape single quotes with the standard '\'' sequence` | template ext | `shellQuote` emitted one backslash too few, so an embedded single quote closed the quoted string instead of surviving as data. The test had always expected the standard form. |
-| `test(pi): sync pi.test.ts with inline mode` | test | The branch deleted eleven helpers the test file re-exported from the template, so `loadExtensionInternals()` threw before a single assertion ran (21 of 47 cases red). Dropped the sub-agent suites and re-pointed the survivors at pointer/breadcrumb behaviour. |
+| `test(pi): sync pi.test.ts with inline mode` | test | The branch deleted eleven helpers the test file re-exported from the template, which made 21 of its 47 cases fail — but only the ones that *call* those helpers, because TypeScript's CJS emit hoists an unknown export name as `undefined` instead of throwing (see below). Dropped the sub-agent suites and re-pointed the survivors at pointer/breadcrumb behaviour. |
 | `fix(workflow): keep the inline wording out of the shared breadcrumbs` | `workflow.md` template, template ext | The branch had overwritten the sub-agent dispatch lines in the plain `[workflow-state:planning]` / `[in_progress]` blocks with inline wording. Pi never reads those bodies (the extension resolves the status to a phase step first), while every non-codex platform's hook injects exactly them — `resolve_breadcrumb_key` returns the plain status for everything but codex. Restored the dispatch lines, kept the task-coordination additions, and made the Pi fallback prefer the `-inline` twin. See below. |
 | `test: align the upstream suites with inline mode` | tests, `.husky/` | Five files asserted behaviour the branch removed: sub-agent registration in the generated extension, Pi's step 2.1 hook block, the sub-agent jsonl line in the planning breadcrumb, and two hardcoded platform-block member lists. Also made one fixture idempotent (a sibling bare repo survived across runs, so its second `main` push was rejected as non-fast-forward) and added the missing build to the pre-commit hook — three integration tests spawn the real CLI, which loads `packages/cli/dist/`. |
 | `chore: sync this repo's own Pi assets with the updated templates` | `.pi/`, `.trellis/` | The repo runs Trellis on itself |
@@ -89,12 +89,26 @@ the `trellis init` templates and the `.pi/extensions/trellis/index.ts` copies in
 the projects all come from the same bytes.
 
 **Two things the branch left behind, and how they hid.** The dead-code removal
-was invisible to any test because the test file could not load at all: it
-re-exported helpers (`normalizeAgent`, `buildPiArgs`, `servingSessionId`, …) that
-went out with the sub-agent feature, so `loadExtensionInternals()` threw and
-took every case in the file with it — including the ones covering behaviour that
-still existed. A green-looking subset (26 of 47) came only from the one suite
-that does not call it.
+was invisible to any test because the test file lost the helpers it asserts on:
+it re-exported eleven names (`normalizeAgent`, `buildPiArgs`, `servingSessionId`,
+…) that went out with the sub-agent feature.
+
+An earlier version of this note claimed `loadExtensionInternals()` threw, which
+would have taken the whole file with it. That is wrong, and the difference is
+what let the breakage hide: `ts.transpileModule` with `module: CommonJS` hoists
+every export name, so a name that no longer exists becomes `undefined` rather
+than a load-time `ReferenceError`:
+
+```js
+// source:  const real = 1;  export { real, gone };
+// emitted: exports.gone = exports.real = void 0;  ...  exports.real = real;
+```
+
+So the file loaded fine, 26 of its 47 cases passed, and the failures read
+`normalizeAgent is not a function` — which looks like a handful of stale cases
+rather than a suite that no longer matches its subject. The one suite that does
+not call `loadExtensionInternals()` (`context injection limits`) was fully green,
+which completed the impression that only part of the file was affected.
 
 The `shellQuote` bug is the same shape: the escape sequence was written as
 `'\''` in a template literal instead of `'\\''`, which renders as
