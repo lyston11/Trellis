@@ -37,14 +37,43 @@ Branch `local/pi-inline-context`, on top of `upstream/main`:
 | `fix(pi): carry the phase step and the artifact list in the breadcrumb` | template ext | An active task used to dedup per status, which meant its step detail vanished once persisted. It now re-asserts every turn and names the task's worktree, so the model keeps seeing "cd there" and "read prd.md first" instead of losing it in a 124-line AGENTS.md. |
 | `fix(pi): key overview and pointer snapshots by task, not just session` | template ext | A mid-session task switch must rebuild them |
 | `feat(pi): remove trellis_subagent entirely, keep inline workflow` | template ext | The tool spawned a cold pi subprocess per dispatch and held the main session hostage; the user has no use for it. Removes the registration, the alt+o shortcut, the native-card rendering, the runPi/runSubagent pipeline, the CLI resolver, and the agent frontmatter parser. The inline workflow (context injection) is unchanged. Supersedes `chore(pi): stop declaring trellis_subagent to the model by default`. |
-| `feat(workflow): treat Pi as an inline platform` | `workflow.md` template | Pi reads `planning`/`in_progress` only; the `-inline` bodies were Codex-only |
+| `feat(workflow): treat Pi as an inline platform` | `workflow.md` template | Pi reads `planning`/`in_progress` only; the `-inline` bodies were Codex-only. The bodies it actually reads are the phase steps, so the platform-block membership is the part that matters — see the shared-breadcrumb note below. |
 | `fix(pi): restore the cmdHasTrellisCtx guard` | template ext | `feat(pi): remove trellis_subagent entirely` deleted the definition with the rest of the sub-agent helpers but left the `tool_call` call site, so the handler threw `ReferenceError` and Pi blocked **every** bash call. Restored with a command-position regex (start, `env`/`export`, or after `;`/`&&`/`|`) instead of the old start-only one. |
 | `refactor(pi): drop the context-injection path inline mode never reaches` | template ext | `buildContext` kept the whole #441 machinery alive (truncateUtf8, ContextBudget, the binary/truncate/index notices, readContextInjectionLimits, TRELLIS_AGENT_JSONL) although the task pointer had replaced the full context broadcast, so nothing called any of it. ~280 lines deleted; `readJsonlEntries` stays, the pointer uses it. |
 | `fix(pi): escape single quotes with the standard '\'' sequence` | template ext | `shellQuote` emitted one backslash too few, so an embedded single quote closed the quoted string instead of surviving as data. The test had always expected the standard form. |
 | `test(pi): sync pi.test.ts with inline mode` | test | The branch deleted eleven helpers the test file re-exported from the template, so `loadExtensionInternals()` threw before a single assertion ran (21 of 47 cases red). Dropped the sub-agent suites and re-pointed the survivors at pointer/breadcrumb behaviour. |
+| `fix(workflow): keep the inline wording out of the shared breadcrumbs` | `workflow.md` template, template ext | The branch had overwritten the sub-agent dispatch lines in the plain `[workflow-state:planning]` / `[in_progress]` blocks with inline wording. Pi never reads those bodies (the extension resolves the status to a phase step first), while every non-codex platform's hook injects exactly them — `resolve_breadcrumb_key` returns the plain status for everything but codex. Restored the dispatch lines, kept the task-coordination additions, and made the Pi fallback prefer the `-inline` twin. See below. |
+| `test: align the upstream suites with inline mode` | tests, `.husky/` | Five files asserted behaviour the branch removed: sub-agent registration in the generated extension, Pi's step 2.1 hook block, the sub-agent jsonl line in the planning breadcrumb, and two hardcoded platform-block member lists. Also made one fixture idempotent (a sibling bare repo survived across runs, so its second `main` push was rejected as non-fast-forward) and added the missing build to the pre-commit hook — three integration tests spawn the real CLI, which loads `packages/cli/dist/`. |
 | `chore: sync this repo's own Pi assets with the updated templates` | `.pi/`, `.trellis/` | The repo runs Trellis on itself |
 
 ## Non-obvious points
+
+**The shared breadcrumbs leaked inline guidance to twelve platforms.**
+`feat(workflow): treat Pi as an inline platform` rewrote the plain
+`[workflow-state:planning]` and `[workflow-state:in_progress]` bodies to say
+"skip jsonl curation" and "do not dispatch implement/check sub-agents". The
+intent was to make Pi inline, but Pi cannot see those bodies:
+
+- the extension resolves a status to a phase step first (`stepForStatus`:
+  `planning` → 1.1, `in_progress` → 2.1) and pushes the step detail; the body is
+  only the fallback, and `no_task`/`task_error` (which have no inline twin) are
+  the states where a body really is what Pi reads;
+- `inject-workflow-state.py`'s `resolve_breadcrumb_key` returns the plain status
+  for every platform except codex, so Claude Code, Cursor, Kiro, Gemini, Qoder,
+  Copilot, Droid, ZCode, Snow, Oh My Pi, Reasonix, Trae, Grok and Kimi Code all
+  read those bodies — and their step 2.1 still tells them to dispatch.
+
+So the edit reached only the platforms it was wrong for. The bodies are back to
+the sub-agent wording (plus the new coordination lines), and the Pi fallback now
+prefers `templates[`${status}-inline`]`, which is the variant the comment above
+the block always claimed Pi used.
+
+**Two tests were failing for reasons unrelated to the branch.** The
+`platforms.integration` suite spawns the built CLI, so it fails on any tree
+without `packages/cli/dist/` — the pre-commit hook now builds first. And the
+`issue-399.1` fixture creates its bare remote at `path.join(tmpDir, "..")`,
+which the OS tmpdir keeps between runs: the second run pushes a different `main`
+and git rejects it, so it deletes the leftover first.
 
 **A deleted helper still had a call site.** `cmdHasTrellisCtx` sat between the
 sub-agent helpers `feat(pi): remove trellis_subagent entirely` deleted, so it went

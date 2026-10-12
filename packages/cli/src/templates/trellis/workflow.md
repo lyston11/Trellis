@@ -241,16 +241,17 @@ Load `trellis-brainstorm`; stay in planning.
 Lightweight: `prd.md` can be enough. Complex: finish `prd.md`, `design.md`, and `implement.md`; ask for review before `task.py start`.
 Multi-deliverable scope: consider a parent task plus independently verifiable child tasks; dependencies must be written in child artifacts, not implied by tree position.
 Parallel work: declare `owned_paths` for every file you will touch and record ordering with `task.py add-blocker`; `start` refuses overlapping claims.
-Inline mode (this project): skip jsonl curation; Phase 2 reads artifacts/specs via `trellis-before-dev`.
+Sub-agent mode: curate `implement.jsonl` and `check.jsonl` as spec/research manifests before start.
 [/workflow-state:planning]
 
 <!-- Per-turn breadcrumb: shown throughout Phase 1 when codex.dispatch_mode=inline.
      Codex opt-in alternate to [workflow-state:planning], also used by Pi.
      The main agent edits code directly in Phase 2, so jsonl curation is
      skipped — the inline workflow loads `trellis-before-dev` instead of
-     injecting JSONL into a sub-agent. Pi reads this variant only when the
-     [workflow-state:planning] body above carries the inline instructions
-     (Pi resolves status -> planning, with no dispatch_mode mapping). -->
+     injecting JSONL into a sub-agent. The Pi extension prefers this body
+     over the plain one whenever a `-inline` twin exists; see the note on
+     [workflow-state:in_progress] below for why the plain block keeps the
+     sub-agent wording. -->
 
 [workflow-state:planning-inline]
 Load `trellis-brainstorm`; stay in planning.
@@ -274,17 +275,26 @@ Inline mode: skip jsonl curation; Phase 2 reads artifacts/specs via `trellis-bef
 Sub-agent dispatch protocol applies to all platforms and all sub-agents, including native Codex `SubagentStart` context injection with child-side pull fallback, class-2 Gemini/Qoder/Copilot/Reasonix/Trae/Grok/Kimi Code, hook-backed ZCode/Snow, and `trellis-research`: every dispatch prompt starts with `Active task: <task path from task.py current>` before role-specific instructions. On Grok Build, use `spawn_subagent` with `subagent_type` set to the Trellis agent name (e.g. `trellis-implement`). On Kimi Code, dispatch the built-in `coder` / `explore` sub-agent with the matching `.kimi-code/skills/trellis-<role>/SKILL.md` instructions.
 
 [workflow-state:in_progress]
-Flow: `trellis-before-dev` -> edit -> `trellis-check` -> validation -> `trellis-update-spec` -> commit (Phase 3.4) -> `/trellis:finish-work`.
-Do not dispatch implement/check sub-agents in this project; the main session edits code directly.
-Read context: `prd.md` -> `design.md if present` -> `implement.md if present`, plus relevant spec/research loaded by skills.
+Tools: `trellis-implement` / `trellis-research` are sub-agent types only (Task/Agent tool, NOT Skill; there is no skill by these names). `trellis-update-spec` is a skill. `trellis-check` exists as both; prefer the Agent form when verifying after code changes.
+Flow: `trellis-implement` -> `trellis-check` -> `trellis-update-spec` -> commit (Phase 3.4) -> `/trellis:finish-work`.
+Main-session default: dispatch implement/check sub-agents. Sub-agent self-exemption: if already running as `trellis-implement`, do NOT spawn another `trellis-implement` or `trellis-check`; if already running as `trellis-check`, do NOT spawn another `trellis-check` or `trellis-implement`. Dispatch is main session only.
+Dispatch prompt starts with `Active task: <task path from task.py current>`. Read context: jsonl entries -> `prd.md` -> `design.md if present` -> `implement.md if present`.
 Before integrating: run `task.py preflight <name>` and hold the integration lane with `integration-claim`; one task integrates at a time.
 [/workflow-state:in_progress]
 
 <!-- Per-turn breadcrumb: shown while status='in_progress' when
      codex.dispatch_mode=inline, also used by Pi. Alternate to
      [workflow-state:in_progress]. The main session edits code directly
-     instead of dispatching sub-agents. Pi resolves status -> in_progress
-     only, so Pi reads whichever body that block carries. -->
+     instead of dispatching sub-agents.
+
+     The plain blocks above stay sub-agent worded on purpose. The Pi
+     extension resolves the status to a phase step first (`stepForStatus`:
+     planning -> 1.1, in_progress -> 2.1) and only falls back to a body when
+     that step yields no detail, and on that fallback it prefers the
+     `-inline` twin. Pi therefore never reads the plain bodies, while the
+     platforms whose hooks inject them (`resolve_breadcrumb_key` returns the
+     plain status for everything but codex) still get dispatch guidance that
+     matches their step 2.1. -->
 
 [workflow-state:in_progress-inline]
 Flow: `trellis-before-dev` -> edit -> `trellis-check` -> validation -> `trellis-update-spec` -> commit (Phase 3.4) -> `/trellis:finish-work`.

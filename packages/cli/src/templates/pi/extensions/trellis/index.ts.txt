@@ -323,8 +323,15 @@ function workflowBreadcrumb(root: string, key: string | null): string {
       );
     if (artifacts.length)
       lines.push(`Read before editing: ${artifacts.join(", ")} in that directory.`);
+    // A `-inline` twin wins over the plain body. Pi resolves the status to a
+    // phase step first, so this line only decides the fallback — but on that
+    // fallback the plain body would tell Pi to dispatch sub-agents, which is
+    // the opposite of what an inline platform does.
     lines.push(
-      detail || templates[status] || "Refer to workflow.md for current step.",
+      detail ||
+        templates[`${status}-inline`] ||
+        templates[status] ||
+        "Refer to workflow.md for current step.",
     );
   } else {
     lines.push("Status: no_task");
